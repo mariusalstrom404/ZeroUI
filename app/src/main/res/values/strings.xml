@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">My Application</string>
+    <string name="accessibility_service_description">This service allows the app to perform NLP-based commands like clicking or scrolling on your behalf.</string>
+</resources>
