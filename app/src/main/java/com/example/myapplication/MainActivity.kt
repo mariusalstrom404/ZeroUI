@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private val replyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val reply = intent?.getStringExtra("reply_text") ?: return
+            Log.d("NLPControl", "MainActivity received reply: $reply")
             addAssistantMessage(reply)
         }
     }
@@ -71,6 +72,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         } else {
             registerReceiver(replyReceiver, filter)
         }
+
+        handleIntent(intent)
 
         setContent {
             MyApplicationTheme {
@@ -106,6 +109,18 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
         messages.add(Message(text, false))
         speak(text)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent) {
+        if (intent.getBooleanExtra("start_voice", false)) {
+            Log.d("NLPControl", "Triggering voice from intent")
+        }
     }
 
     private var currentIntent = UIIntent.NONE
