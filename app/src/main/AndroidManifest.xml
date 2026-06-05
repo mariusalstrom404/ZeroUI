@@ -44,6 +44,7 @@
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
+            android:windowSoftInputMode="adjustNothing"
             android:theme="@style/Theme.MyApplication.Dialog">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

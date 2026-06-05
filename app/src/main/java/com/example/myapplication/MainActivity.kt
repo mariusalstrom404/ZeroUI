@@ -121,7 +121,6 @@ fun ConversationalNLPUI(
         modifier = modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.ime)
-            .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         ZeroUIHeader(
             isListening = isListening,
