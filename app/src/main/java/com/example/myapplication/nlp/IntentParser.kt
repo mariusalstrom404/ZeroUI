@@ -32,8 +32,7 @@ class RuleBasedParser : IntentParser {
         fun isFoodGorilla() = lower.contains("foodgorilla") || lower.contains("food gorilla")
 
         return when {
-            lower.contains("balance") && (lower.contains("finance") || lower.contains("mock")) ->
-                IntentLabel.CHECK_BALANCE
+            lower.contains("balance") -> IntentLabel.CHECK_BALANCE
             lower.contains("transfer") && lower.contains("to") -> IntentLabel.TRANSFER
             lower.contains("history") -> IntentLabel.HISTORY
             lower.contains("top up") || lower.contains("refill") || lower.contains("top-up") ->

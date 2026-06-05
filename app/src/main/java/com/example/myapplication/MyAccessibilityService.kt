@@ -106,8 +106,9 @@ class MyAccessibilityService : AccessibilityService() {
             AppIntent.CheckBalance -> {
                 val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_DASHBOARD)).setPackage(MOCKFINANCE_PKG)
                 if (safeStartActivity(viewIntent) || openAppByName("MockFinance")) {
-                    delay(2500) // Give it more time to load
-                    val balance = findNodeByContentDescription("Balance Amount Value")?.text?.toString()
+                    delay(2500)
+                    val balanceCard = findNodeByContentDescription("Wallet Balance Display")
+                    val balance = if (balanceCard != null) findCurrencyTextInSubtree(balanceCard) else null
                     if (balance != null) sendReply("Your balance is $balance.")
                     else sendReply("I opened MockFinance but couldn't find the balance on screen.")
                 } else {
@@ -362,6 +363,16 @@ class MyAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = searchForNode(child, predicate)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findCurrencyTextInSubtree(node: AccessibilityNodeInfo): String? {
+        val text = node.text?.toString()
+        if (!text.isNullOrEmpty() && text.startsWith("$")) return text
+        for (i in 0 until node.childCount) {
+            val found = findCurrencyTextInSubtree(node.getChild(i) ?: continue)
             if (found != null) return found
         }
         return null

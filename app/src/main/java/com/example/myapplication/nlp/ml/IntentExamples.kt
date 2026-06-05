@@ -41,7 +41,8 @@ object IntentExamples {
         ),
         IntentLabel.CHECK_BALANCE to listOf(
             "check my mock finance balance", "how much money do I have in mockfinance",
-            "what's my account balance"
+            "what's my account balance", "check my balance", "what's my balance",
+            "how much money do I have", "show me my balance"
         ),
         IntentLabel.TRANSFER to listOf(
             "transfer 50 to Bob", "send 20 dollars to Alice", "pay 100 to John"
