@@ -17,6 +17,8 @@ import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.IntentParser
 import com.example.myapplication.nlp.ml.ParserFactory
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Holds the conversational state and decision logic that used to live in MainActivity.
@@ -44,6 +46,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     var speak: (String) -> Unit = {}
 
     init {
+        loadHistory()
         if (messages.isEmpty()) {
             messages.add(
                 Message(
@@ -57,6 +60,40 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             onReply = { onServiceReply(it) },
             onStatus = { isProcessing = it == CommandBridge.Status.STARTED }
         )
+    }
+
+    private fun saveHistory() {
+        val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
+        val array = JSONArray()
+        messages.forEach {
+            val obj = JSONObject()
+            obj.put("text", it.text)
+            obj.put("isUser", it.isUser)
+            array.put(obj)
+        }
+        prefs.edit().putString("history", array.toString()).apply()
+    }
+
+    private fun loadHistory() {
+        val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
+        val history = prefs.getString("history", null) ?: return
+        try {
+            val array = JSONArray(history)
+            messages.clear()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                messages.add(Message(obj.getString("text"), obj.getBoolean("isUser")))
+            }
+        } catch (e: Exception) {
+            messages.clear()
+        }
+    }
+
+    private fun clearHistory() {
+        messages.clear()
+        val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
+        prefs.edit().remove("history").apply()
+        addAssistant("I've cleared our conversation history.")
     }
 
     override fun onCleared() {
@@ -138,6 +175,25 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
         // 4. Single intent.
         when (val intent = parser.parse(userInput)) {
+            AppIntent.Greeting -> {
+                addAssistant("Hi! I'm ZeroUI, your voice assistant. Here is what I can do for you:\n\n" +
+                        "📱 **Device Control**: 'turn on flashlight', 'volume up', 'set brightness to 50%', or 'check battery'.\n" +
+                        "📸 **Screenshot & Photo**: 'take a screenshot', 'open camera', or 'take a photo'.\n" +
+                        "🗺️ **Navigation**: 'navigate to Central Park' or 'take me to the airport'.\n" +
+                        "🏦 **Banking (NCCUbank)**: 'check my balance', 'transfer 50 to Bob', or 'show my transaction history'.\n" +
+                        "🍕 **Food (FoodGorilla)**: 'search for pizza on FoodGorilla' or 'open my cart'.\n" +
+                        "💬 **Social (Throats)**: 'post Hello World to Throats'.\n" +
+                        "📜 **History**: 'save history' or 'clear history'.\n" +
+                        "🔄 **Repeat**: 'repeat' or 'one more time'.\n\n" +
+                        "How can I help you today?")
+            }
+            AppIntent.SaveHistory -> {
+                saveHistory()
+                addAssistant("Conversation history has been saved successfully.")
+            }
+            AppIntent.ClearHistory -> {
+                clearHistory()
+            }
             AppIntent.Battery -> {
                 val bm = getApplication<Application>()
                     .getSystemService(Context.BATTERY_SERVICE) as BatteryManager

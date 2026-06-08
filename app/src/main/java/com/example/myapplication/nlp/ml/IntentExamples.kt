@@ -40,7 +40,7 @@ object IntentExamples {
             "open Spotify", "launch the camera", "start the calculator app"
         ),
         IntentLabel.CHECK_BALANCE to listOf(
-            "check my mock finance balance", "how much money do I have in mockfinance",
+            "check my nccubank balance", "how much money do I have in nccubank",
             "what's my account balance", "check my balance", "what's my balance",
             "how much money do I have", "show me my balance"
         ),

@@ -34,6 +34,7 @@ class MyAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var currentJob: Job? = null
     private val parser: IntentParser by lazy { ParserFactory.create(this) }
+    private var lastRawCommand: String? = null
 
     companion object {
         // Throats API Integration
@@ -42,12 +43,12 @@ class MyAccessibilityService : AccessibilityService() {
         private const val ACTION_THROATS_REPOST = "com.example.threadssim.ACTION_REPOST"
         private const val ACTION_THROATS_COMMENT = "com.example.threadssim.ACTION_CREATE_COMMENT"
         
-        // MockFinance Integration
-        private const val MOCKFINANCE_PKG = "com.example.mockfinance"
-        private const val URI_DASHBOARD = "mockfinance://dashboard"
-        private const val URI_TRANSFER = "mockfinance://transfer"
-        private const val URI_HISTORY = "mockfinance://history"
-        private const val URI_TOP_UP = "mockfinance://topup"
+        // NCCUbank Integration
+        private const val NCCUBANK_PKG = "com.example.nccubank"
+        private const val URI_DASHBOARD = "nccubank://dashboard"
+        private const val URI_TRANSFER = "nccubank://transfer"
+        private const val URI_HISTORY = "nccubank://history"
+        private const val URI_TOP_UP = "nccubank://topup"
 
         // FoodGorilla Integration
         private const val FOODGORILLA_PKG = "com.example.foodgorilla"
@@ -96,33 +97,37 @@ class MyAccessibilityService : AccessibilityService() {
 
     private suspend fun processSingleCommand(command: String) {
         Log.d("NLPControl", "Processing: $command")
-        dispatch(parser.parse(command), command)
+        val intent = parser.parse(command)
+        if (intent !is AppIntent.RepeatLast) {
+            lastRawCommand = command
+        }
+        dispatch(intent, command)
     }
 
     /** Executes a parsed [AppIntent] using the accessibility/system capabilities. */
     private suspend fun dispatch(intent: AppIntent, rawCommand: String) {
         when (intent) {
-            // MockFinance: Check Balance
+            // NCCUbank: Check Balance
             AppIntent.CheckBalance -> {
-                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_DASHBOARD)).setPackage(MOCKFINANCE_PKG)
-                if (safeStartActivity(viewIntent) || openAppByName("MockFinance")) {
+                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_DASHBOARD)).setPackage(NCCUBANK_PKG)
+                if (safeStartActivity(viewIntent) || openAppByName("NCCUbank")) {
                     delay(2500)
                     val balanceCard = findNodeByContentDescription("Wallet Balance Display")
                     val balance = if (balanceCard != null) findCurrencyTextInSubtree(balanceCard) else null
                     if (balance != null) sendReply("Your balance is $balance.")
-                    else sendReply("I opened MockFinance but couldn't find the balance on screen.")
+                    else sendReply("I opened NCCUbank but couldn't find the balance on screen.")
                 } else {
-                    sendReply("I couldn't find the MockFinance app on your device.")
+                    sendReply("I couldn't find the NCCUbank app on your device.")
                 }
             }
 
-            // MockFinance: Transfer
+            // NCCUbank: Transfer
             is AppIntent.Transfer -> {
                 val amount = intent.amount
                 val recipient = intent.recipient
                 if (amount != null && recipient != null) {
                     val uri = Uri.parse("$URI_TRANSFER?amount=$amount&recipient=$recipient")
-                    val viewIntent = Intent(Intent.ACTION_VIEW, uri).setPackage(MOCKFINANCE_PKG)
+                    val viewIntent = Intent(Intent.ACTION_VIEW, uri).setPackage(NCCUBANK_PKG)
 
                     if (safeStartActivity(viewIntent)) {
                         sendReply("Initiating transfer of $amount to $recipient.")
@@ -130,16 +135,16 @@ class MyAccessibilityService : AccessibilityService() {
                         if (findNodeByText("Success") != null) sendReply("Transfer completed successfully!")
                     } else {
                         // Deep link failed, try manual navigation
-                        if (openAppByName("MockFinance")) {
+                        if (openAppByName("NCCUbank")) {
                             delay(2500)
                             if (performClickOnText("Transfer") || performClickOnText("Transfer Button")) {
                                 delay(1500)
-                                sendReply("I've opened the transfer screen in MockFinance. Please confirm the details.")
+                                sendReply("I've opened the transfer screen in NCCUbank. Please confirm the details.")
                             } else {
-                                sendReply("I couldn't start the transfer. Is the MockFinance app up to date?")
+                                sendReply("I couldn't start the transfer. Is the NCCUbank app up to date?")
                             }
                         } else {
-                            sendReply("I couldn't find the MockFinance app.")
+                            sendReply("I couldn't find the NCCUbank app.")
                         }
                     }
                 } else {
@@ -147,30 +152,30 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // MockFinance: History
+            // NCCUbank: History
             AppIntent.TransactionHistory -> {
-                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_HISTORY)).setPackage(MOCKFINANCE_PKG)
+                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_HISTORY)).setPackage(NCCUBANK_PKG)
                 if (!safeStartActivity(viewIntent)) {
-                    if (openAppByName("MockFinance")) {
+                    if (openAppByName("NCCUbank")) {
                         delay(2500)
                         if (performClickOnText("History") || performClickOnText("History Button") || performClickOnText("Transactions")) {
                             sendReply("Showing your transaction history.")
                         } else {
-                            sendReply("I couldn't find the history button in MockFinance.")
+                            sendReply("I couldn't find the history button in NCCUbank.")
                         }
                     } else {
-                        sendReply("MockFinance is not installed.")
+                        sendReply("NCCUbank is not installed.")
                     }
                 } else {
                     sendReply("Showing your transaction history.")
                 }
             }
 
-            // MockFinance: Top up
+            // NCCUbank: Top up
             AppIntent.TopUp -> {
-                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_TOP_UP)).setPackage(MOCKFINANCE_PKG)
+                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_TOP_UP)).setPackage(NCCUBANK_PKG)
                 if (!safeStartActivity(viewIntent)) {
-                    if (openAppByName("MockFinance")) {
+                    if (openAppByName("NCCUbank")) {
                         delay(2500)
                         if (performClickOnText("Top-up") || performClickOnText("Top Up") || performClickOnText("Top-up Button") || performClickOnText("Deposit")) {
                             sendReply("Opening the top up screen.")
@@ -317,6 +322,48 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
+            // Conversation Management
+            AppIntent.Greeting -> {
+                sendReply("Hi! I'm ZeroUI. You can use me to control your device, navigate, handle banking with NCCUbank, order food, or post on social media. Try saying 'check my balance', 'take a screenshot', or 'repeat'. How can I help?")
+            }
+            AppIntent.SaveHistory -> {
+                sendReply("Conversation history has been saved.")
+            }
+            AppIntent.ClearHistory -> {
+                sendReply("I've cleared the conversation history.")
+            }
+            AppIntent.RepeatLast -> {
+                val last = lastRawCommand
+                if (last != null) {
+                    sendReply("Repeating your last command: $last")
+                    delay(1000)
+                    processSingleCommand(last)
+                } else {
+                    sendReply("I don't have a previous command to repeat yet.")
+                }
+            }
+            AppIntent.TakeScreenshot -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+                    sendReply("Taking a screenshot for you.")
+                } else {
+                    sendReply("Screenshot requires Android 11 or higher.")
+                }
+            }
+            is AppIntent.CameraAction -> {
+                val takePhoto = intent.takePhoto
+                val camIntent = if (takePhoto) {
+                    Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                } else {
+                    Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+                }
+                if (safeStartActivity(camIntent)) {
+                    sendReply(if (takePhoto) "Opening camera to take a photo." else "Opening camera.")
+                } else {
+                    sendReply("I couldn't open the camera app.")
+                }
+            }
+
             // Navigation
             is AppIntent.Navigate -> {
                 if (!intent.destination.isNullOrEmpty()) {
@@ -415,9 +462,9 @@ class MyAccessibilityService : AccessibilityService() {
         var target = apps.find { pm.getApplicationLabel(it).toString().lowercase() == cleanName }
         if (target == null) target = apps.find { pm.getApplicationLabel(it).toString().lowercase().contains(cleanName) }
         
-        // Fallback: If searching for MockFinance, try searching by package name directly
-        if (target == null && cleanName.contains("mock")) {
-            target = apps.find { it.packageName == MOCKFINANCE_PKG }
+        // Fallback: If searching for NCCUbank, try searching by package name directly
+        if (target == null && cleanName.contains("nccu")) {
+            target = apps.find { it.packageName == NCCUBANK_PKG }
         }
 
         return target?.let {

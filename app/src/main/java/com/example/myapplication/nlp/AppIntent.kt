@@ -18,12 +18,18 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
     data class Flashlight(val enable: Boolean) : AppIntent()
     data class Volume(val change: Change, val level: Int? = null) : AppIntent()
     data class Brightness(val change: Change, val level: Int? = null) : AppIntent()
+    data object Greeting : AppIntent()
+    data object SaveHistory : AppIntent()
+    data object ClearHistory : AppIntent()
+    data object RepeatLast : AppIntent()
+    data object TakeScreenshot : AppIntent()
+    data class CameraAction(val takePhoto: Boolean = false) : AppIntent()
 
     // --- Navigation / apps ---
     data class Navigate(val destination: String?, val mode: String? = null) : AppIntent()
     data class OpenApp(val name: String) : AppIntent()
 
-    // --- MockFinance ---
+    // --- NCCUbank ---
     data object CheckBalance : AppIntent()
     data class Transfer(val amount: Int?, val recipient: String?) : AppIntent(requiresConfirmation = true)
     data object TransactionHistory : AppIntent()

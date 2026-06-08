@@ -16,7 +16,7 @@ class RuleBasedParserTest {
 
     @Test
     fun checkBalance_requiresFinanceContext() {
-        assertEquals(AppIntent.CheckBalance, parser.parse("check my mockfinance balance"))
+        assertEquals(AppIntent.CheckBalance, parser.parse("check my nccubank balance"))
         // "balance" alone (no finance/mock) should NOT classify as CheckBalance
         assertTrue(parser.parse("balance the books") is AppIntent.ClickText)
     }

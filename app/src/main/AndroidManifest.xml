@@ -10,11 +10,11 @@
 
     <queries>
         <package android:name="com.example.threadssim" />
-        <package android:name="com.example.mockfinance" />
+        <package android:name="com.example.nccubank" />
         <package android:name="com.example.foodgorilla" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="mockfinance" />
+            <data android:scheme="nccubank" />
         </intent>
         <intent>
             <action android:name="android.intent.action.VIEW" />
