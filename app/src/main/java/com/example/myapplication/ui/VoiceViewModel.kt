@@ -177,14 +177,14 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         when (val intent = parser.parse(userInput)) {
             AppIntent.Greeting -> {
                 addAssistant("Hi! I'm ZeroUI, your voice assistant. Here is what I can do for you:\n\n" +
-                        "📱 **Device Control**: 'turn on flashlight', 'volume up', 'set brightness to 50%', or 'check battery'.\n" +
-                        "📸 **Screenshot & Photo**: 'take a screenshot', 'open camera', or 'take a photo'.\n" +
-                        "🗺️ **Navigation**: 'navigate to Central Park' or 'take me to the airport'.\n" +
-                        "🏦 **Banking (NCCUbank)**: 'check my balance', 'transfer 50 to Bob', or 'show my transaction history'.\n" +
-                        "🍕 **Food (FoodGorilla)**: 'search for pizza on FoodGorilla' or 'open my cart'.\n" +
-                        "💬 **Social (Throats)**: 'post Hello World to Throats'.\n" +
-                        "📜 **History**: 'save history' or 'clear history'.\n" +
-                        "🔄 **Repeat**: 'repeat' or 'one more time'.\n\n" +
+                        " Device Control: 'turn on flashlight', 'volume up', 'set brightness to 50%', or 'check battery'.\n" +
+                        " Screenshot & Photo: 'take a screenshot', 'open camera', or 'take a photo'.\n" +
+                        " Navigation: 'navigate to Central Park' or 'take me to the airport'.\n" +
+                        " Banking (NCCUbank): 'check my balance', 'transfer 50 to Bob', or 'show my transaction history'.\n" +
+                        " Food (FoodGorilla): 'search for pizza on FoodGorilla' or 'open my cart'.\n" +
+                        " Social (Throats): 'post Hello World to Throats'.\n" +
+                        " History: 'save history' or 'clear history'.\n" +
+                        " Repeat: 'repeat' or 'one more time'.\n\n" +
                         "How can I help you today?")
             }
             AppIntent.SaveHistory -> {
