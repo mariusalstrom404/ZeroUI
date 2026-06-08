@@ -32,9 +32,20 @@ class RuleBasedParser : IntentParser {
         fun isFoodGorilla() = lower.contains("foodgorilla") || lower.contains("food gorilla")
 
         return when {
+            lower.contains("save history") || lower.contains("save logs") || lower.contains("store history") ->
+                IntentLabel.SAVE_HISTORY
+            lower.contains("clear history") || lower.contains("delete history") || lower.contains("empty logs") || lower.contains("clear logs") ->
+                IntentLabel.CLEAR_HISTORY
+            lower.contains("repeat") || lower.contains("do it again") || lower.contains("one more time") || lower.contains("重做") || lower.contains("重複") || lower.contains("再一次") ->
+                IntentLabel.REPEAT_LAST
+            lower.contains("screenshot") || lower.contains("screen shot") || lower.contains("截圖") || lower.contains("截屏") ->
+                IntentLabel.TAKE_SCREENSHOT
+            lower.contains("photo") || lower.contains("picture") || lower.contains("selfie") || lower.contains("拍照") || lower.contains("攝影") || lower.contains("相機") || lower.contains("camera") ->
+                IntentLabel.CAMERA_ACTION
+
             lower.contains("balance") -> IntentLabel.CHECK_BALANCE
             lower.contains("transfer") && lower.contains("to") -> IntentLabel.TRANSFER
-            lower.contains("history") -> IntentLabel.HISTORY
+            lower.contains("history") && (lower.contains("bank") || lower.contains("nccu") || lower.contains("transaction") || lower.contains("payment")) -> IntentLabel.HISTORY
             lower.contains("top up") || lower.contains("refill") || lower.contains("top-up") ->
                 IntentLabel.TOP_UP
 
@@ -48,6 +59,9 @@ class RuleBasedParser : IntentParser {
                 IntentLabel.THROATS_POST
             lower.contains("repost") -> IntentLabel.THROATS_REPOST
             lower.contains("comment") || lower.contains("reply") -> IntentLabel.THROATS_COMMENT
+
+            lower.contains("hello") || lower.contains("hi") || lower.contains("你好") ->
+                IntentLabel.GREETING
 
             lower.contains("flashlight") || lower.contains("flash light") ||
                 lower.contains("torch") || lower.contains("light") || lower.contains("dark") ->

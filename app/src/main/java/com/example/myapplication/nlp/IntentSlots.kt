@@ -25,6 +25,13 @@ object IntentSlots {
                 AppIntent.Brightness(brightnessChange(lower, level), level)
             }
 
+            IntentLabel.GREETING -> AppIntent.Greeting
+            IntentLabel.SAVE_HISTORY -> AppIntent.SaveHistory
+            IntentLabel.CLEAR_HISTORY -> AppIntent.ClearHistory
+            IntentLabel.REPEAT_LAST -> AppIntent.RepeatLast
+            IntentLabel.TAKE_SCREENSHOT -> AppIntent.TakeScreenshot
+            IntentLabel.CAMERA_ACTION -> AppIntent.CameraAction(takePhoto = lower.contains("take") || lower.contains("snap") || lower.contains("拍"))
+
             IntentLabel.NAVIGATE -> {
                 val dest = EntityExtractors
                     .targetAfter(command, listOf("navigate to", "take me to", "go to", "navigate"))
