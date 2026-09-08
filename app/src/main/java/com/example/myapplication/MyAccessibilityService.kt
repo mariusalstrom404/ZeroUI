@@ -47,7 +47,7 @@ class MyAccessibilityService : AccessibilityService() {
         private const val ACTION_THROATS_POST = "com.example.threadssim.ACTION_CREATE_POST"
         private const val ACTION_THROATS_REPOST = "com.example.threadssim.ACTION_REPOST"
         private const val ACTION_THROATS_COMMENT = "com.example.threadssim.ACTION_CREATE_COMMENT"
-        
+
         // NCCUbank Integration
         private const val NCCUBANK_PKG = "com.example.nccubank"
         private const val URI_DASHBOARD = "nccubank://dashboard"
@@ -61,7 +61,7 @@ class MyAccessibilityService : AccessibilityService() {
         private const val URI_FG_CART = "foodgorilla://app/cart"
         private const val URI_FG_CHECKOUT = "foodgorilla://app/checkout"
         private const val URI_FG_BUY_NOW = "foodgorilla://api/buy_now"
-        
+
         private val UUID_PATTERN = Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 
@@ -70,6 +70,7 @@ class MyAccessibilityService : AccessibilityService() {
             Log.e("ZeroUIAutomation", "event=${it.eventType}, package=${it.packageName}, class=${it.className}")
         }
     }
+
     override fun onInterrupt() {}
 
     override fun onServiceConnected() {
@@ -215,19 +216,23 @@ class MyAccessibilityService : AccessibilityService() {
             // FoodGorilla: Buy/Order
             is AppIntent.FoodOrder -> {
                 val query = intent.query ?: ""
+
                 if (query.isNotEmpty()) {
                     // Optimized extraction for "item from restaurant"
                     val fromIndex = query.indexOf(" from ", ignoreCase = true)
+
                     val (item, restaurant) = if (fromIndex != -1) {
                         query.substring(0, fromIndex).trim() to query.substring(fromIndex + 6).trim()
                     } else {
-                        // Fallback: use query as item, default to "McDonald's" or vice versa
+                        // Fallback: use query as item, default to "MidOnald's"
                         query to "MidOnald's"
                     }
-                    
+
                     sendReply("Executing FoodGorilla automation for $item at $restaurant.")
                     Log.e("ZeroUIAutomation", "FOOD AUTOMATION START: $item at $restaurant")
+
                     val success = foodGorillaAuto.runOrderWorkflow(restaurant, item)
+
                     if (success) {
                         sendReply("FoodGorilla automation reached checkout successfully.")
                     } else {
@@ -235,6 +240,7 @@ class MyAccessibilityService : AccessibilityService() {
                     }
                 } else if (intent.itemId != null) {
                     val uri = Uri.parse("$URI_FG_BUY_NOW?itemId=${intent.itemId}&quantity=1")
+
                     if (safeStartActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(FOODGORILLA_PKG))) {
                         sendReply("Ordering item ${intent.itemId} from FoodGorilla.")
                     } else {
@@ -253,6 +259,7 @@ class MyAccessibilityService : AccessibilityService() {
                     sendReply("I couldn't open the FoodGorilla cart.")
                 }
             }
+
             AppIntent.FoodCheckout -> {
                 if (safeStartActivity(Intent(Intent.ACTION_VIEW, Uri.parse(URI_FG_CHECKOUT)).setPackage(FOODGORILLA_PKG))) {
                     sendReply("Taking you to FoodGorilla checkout.")
@@ -278,7 +285,13 @@ class MyAccessibilityService : AccessibilityService() {
             // Throats: Create Post
             is AppIntent.ThroatsPost -> {
                 if (intent.content.isNotEmpty()) {
-                    sendThroatsBroadcast(ACTION_THROATS_POST, mapOf("content" to intent.content, "author" to "VoiceAssistant"))
+                    sendThroatsBroadcast(
+                        ACTION_THROATS_POST,
+                        mapOf(
+                            "content" to intent.content,
+                            "author" to "VoiceAssistant"
+                        )
+                    )
                     sendReply("I've posted that to Throats for you.")
                 } else {
                     sendReply("What would you like me to post?")
@@ -289,7 +302,13 @@ class MyAccessibilityService : AccessibilityService() {
             is AppIntent.ThroatsRepost -> {
                 val postId = intent.postId ?: findUuidOnScreen()
                 if (postId != null) {
-                    sendThroatsBroadcast(ACTION_THROATS_REPOST, mapOf("post_id" to postId, "author" to "VoiceAssistant"))
+                    sendThroatsBroadcast(
+                        ACTION_THROATS_REPOST,
+                        mapOf(
+                            "post_id" to postId,
+                            "author" to "VoiceAssistant"
+                        )
+                    )
                     sendReply("Okay, I've reposted that.")
                 } else {
                     sendReply("I couldn't find a post ID to repost.")
@@ -300,7 +319,14 @@ class MyAccessibilityService : AccessibilityService() {
             is AppIntent.ThroatsComment -> {
                 val postId = intent.postId ?: findUuidOnScreen()
                 if (postId != null && intent.content.isNotEmpty()) {
-                    sendThroatsBroadcast(ACTION_THROATS_COMMENT, mapOf("parent_post_id" to postId, "content" to intent.content, "author" to "VoiceAssistant"))
+                    sendThroatsBroadcast(
+                        ACTION_THROATS_COMMENT,
+                        mapOf(
+                            "parent_post_id" to postId,
+                            "content" to intent.content,
+                            "author" to "VoiceAssistant"
+                        )
+                    )
                     sendReply("Comment posted successfully.")
                 } else {
                     sendReply("I need a post and content to comment.")
@@ -310,7 +336,12 @@ class MyAccessibilityService : AccessibilityService() {
             // Flashlight
             is AppIntent.Flashlight -> {
                 if (toggleFlashlight(intent.enable)) {
-                    sendReply(if (intent.enable) "I've turned the light on for you." else "Flashlight is now off.")
+                    sendReply(
+                        if (intent.enable)
+                            "I've turned the light on for you."
+                        else
+                            "Flashlight is now off."
+                    )
                 } else {
                     sendReply("I couldn't toggle the flashlight. Make sure I have camera permissions.")
                 }
@@ -327,10 +358,19 @@ class MyAccessibilityService : AccessibilityService() {
             is AppIntent.Volume -> when (intent.change) {
                 AppIntent.Change.SET -> {
                     val level = (intent.level ?: 50).coerceIn(0, 100)
-                    setVolume(level); sendReply("Volume set to $level%.")
+                    setVolume(level)
+                    sendReply("Volume set to $level%.")
                 }
-                AppIntent.Change.UP -> { adjustVolume(true); sendReply("Turning the volume up.") }
-                AppIntent.Change.DOWN -> { adjustVolume(false); sendReply("Turning the volume down.") }
+
+                AppIntent.Change.UP -> {
+                    adjustVolume(true)
+                    sendReply("Turning the volume up.")
+                }
+
+                AppIntent.Change.DOWN -> {
+                    adjustVolume(false)
+                    sendReply("Turning the volume down.")
+                }
             }
 
             // Brightness
@@ -340,23 +380,37 @@ class MyAccessibilityService : AccessibilityService() {
                 } else when (intent.change) {
                     AppIntent.Change.SET -> {
                         val level = (intent.level ?: 50).coerceIn(0, 100)
-                        adjustBrightness(level); sendReply("Brightness set to $level%.")
+                        adjustBrightness(level)
+                        sendReply("Brightness set to $level%.")
                     }
-                    AppIntent.Change.UP -> { adjustBrightnessRelative(true); sendReply("Increasing the brightness.") }
-                    AppIntent.Change.DOWN -> { adjustBrightnessRelative(false); sendReply("Lowering the brightness.") }
+
+                    AppIntent.Change.UP -> {
+                        adjustBrightnessRelative(true)
+                        sendReply("Increasing the brightness.")
+                    }
+
+                    AppIntent.Change.DOWN -> {
+                        adjustBrightnessRelative(false)
+                        sendReply("Lowering the brightness.")
+                    }
                 }
             }
 
             // Conversation Management
             AppIntent.Greeting -> {
-                sendReply("Hi! I'm ZeroUI. You can use me to control your device, navigate, handle banking with NCCUbank, order food, or post on social media. Try saying 'check my balance', 'take a screenshot', or 'repeat'. How can I help?")
+                sendReply(
+                    "Hi! I'm ZeroUI. You can use me to control your device, navigate, handle banking with NCCUbank, order food, or post on social media. Try saying 'check my balance', 'take a screenshot', or 'repeat'. How can I help?"
+                )
             }
+
             AppIntent.SaveHistory -> {
                 sendReply("Conversation history has been saved.")
             }
+
             AppIntent.ClearHistory -> {
                 sendReply("I've cleared the conversation history.")
             }
+
             AppIntent.RepeatLast -> {
                 val last = lastRawCommand
                 if (last != null) {
@@ -367,6 +421,7 @@ class MyAccessibilityService : AccessibilityService() {
                     sendReply("I don't have a previous command to repeat yet.")
                 }
             }
+
             AppIntent.TakeScreenshot -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
@@ -375,6 +430,7 @@ class MyAccessibilityService : AccessibilityService() {
                     sendReply("Screenshot requires Android 11 or higher.")
                 }
             }
+
             is AppIntent.CameraAction -> {
                 val takePhoto = intent.takePhoto
                 val camIntent = if (takePhoto) {
@@ -382,8 +438,14 @@ class MyAccessibilityService : AccessibilityService() {
                 } else {
                     Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
                 }
+
                 if (safeStartActivity(camIntent)) {
-                    sendReply(if (takePhoto) "Opening camera to take a photo." else "Opening camera.")
+                    sendReply(
+                        if (takePhoto)
+                            "Opening camera to take a photo."
+                        else
+                            "Opening camera."
+                    )
                 } else {
                     sendReply("I couldn't open the camera app.")
                 }
@@ -392,7 +454,10 @@ class MyAccessibilityService : AccessibilityService() {
             // Navigation
             is AppIntent.Navigate -> {
                 if (!intent.destination.isNullOrEmpty()) {
-                    startNavigation(intent.destination, if (intent.mode == "bus") "r" else "d")
+                    startNavigation(
+                        intent.destination,
+                        if (intent.mode == "bus") "r" else "d"
+                    )
                     sendReply("Opening navigation to ${intent.destination}.")
                 } else {
                     sendReply("Where would you like to navigate to?")
@@ -402,8 +467,11 @@ class MyAccessibilityService : AccessibilityService() {
             // App Launching
             is AppIntent.OpenApp -> {
                 if (intent.name.isNotEmpty()) {
-                    if (openAppByName(intent.name)) sendReply("Opening ${intent.name}.")
-                    else sendReply("I couldn't find an app named ${intent.name}.")
+                    if (openAppByName(intent.name)) {
+                        sendReply("Opening ${intent.name}.")
+                    } else {
+                        sendReply("I couldn't find an app named ${intent.name}.")
+                    }
                 } else {
                     sendReply("Which app should I open?")
                 }
@@ -411,48 +479,68 @@ class MyAccessibilityService : AccessibilityService() {
 
             // Fallback: best-effort click on whatever was said
             is AppIntent.ClickText -> {
-                if (performClickOnText(intent.text)) sendReply("Clicked on ${intent.text}.")
+                if (performClickOnText(intent.text)) {
+                    sendReply("Clicked on ${intent.text}.")
+                }
             }
 
             AppIntent.Unknown -> {
-                if (performClickOnText(rawCommand)) sendReply("Clicked on $rawCommand.")
+                if (performClickOnText(rawCommand)) {
+                    sendReply("Clicked on $rawCommand.")
+                }
             }
         }
     }
 
     private fun findNodeByContentDescription(desc: String): AccessibilityNodeInfo? {
         val root = rootInActiveWindow ?: return null
-        return searchForNode(root) { it.contentDescription?.toString()?.equals(desc, true) == true }
+        return searchForNode(root) {
+            it.contentDescription?.toString()?.equals(desc, true) == true
+        }
     }
 
     private fun findNodeByText(text: String): AccessibilityNodeInfo? {
         val root = rootInActiveWindow ?: return null
-        return searchForNode(root) { it.text?.toString()?.equals(text, true) == true }
+        return searchForNode(root) {
+            it.text?.toString()?.equals(text, true) == true
+        }
     }
 
-    private fun searchForNode(node: AccessibilityNodeInfo, predicate: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {
+    private fun searchForNode(
+        node: AccessibilityNodeInfo,
+        predicate: (AccessibilityNodeInfo) -> Boolean
+    ): AccessibilityNodeInfo? {
         if (predicate(node)) return node
+
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = searchForNode(child, predicate)
             if (found != null) return found
         }
+
         return null
     }
 
     private fun findCurrencyTextInSubtree(node: AccessibilityNodeInfo): String? {
         val text = node.text?.toString()
-        if (!text.isNullOrEmpty() && text.startsWith("$")) return text
+
+        if (!text.isNullOrEmpty() && text.startsWith("$")) {
+            return text
+        }
+
         for (i in 0 until node.childCount) {
             val found = findCurrencyTextInSubtree(node.getChild(i) ?: continue)
             if (found != null) return found
         }
+
         return null
     }
 
     private fun sendThroatsBroadcast(action: String, extras: Map<String, String>) {
         val intent = Intent(action).setPackage(THROATS_PKG)
-        extras.forEach { (key, value) -> intent.putExtra(key, value) }
+        extras.forEach { (key, value) ->
+            intent.putExtra(key, value)
+        }
         sendBroadcast(intent)
     }
 
@@ -462,14 +550,20 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     private fun searchForUuid(node: AccessibilityNodeInfo): String? {
-        val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
+        val text = node.text?.toString()
+            ?: node.contentDescription?.toString()
+            ?: ""
+
         val matcher = UUID_PATTERN.matcher(text)
+
         if (matcher.find()) return matcher.group()
+
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = searchForUuid(child)
             if (found != null) return found
         }
+
         return null
     }
 
@@ -482,14 +576,23 @@ class MyAccessibilityService : AccessibilityService() {
         val pm = packageManager
         val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
         val cleanName = name.lowercase().trim()
-        
+
         // Try searching by label
-        var target = apps.find { pm.getApplicationLabel(it).toString().lowercase() == cleanName }
-        if (target == null) target = apps.find { pm.getApplicationLabel(it).toString().lowercase().contains(cleanName) }
-        
+        var target = apps.find {
+            pm.getApplicationLabel(it).toString().lowercase() == cleanName
+        }
+
+        if (target == null) {
+            target = apps.find {
+                pm.getApplicationLabel(it).toString().lowercase().contains(cleanName)
+            }
+        }
+
         // Fallback: If searching for NCCUbank, try searching by package name directly
         if (target == null && cleanName.contains("nccu")) {
-            target = apps.find { it.packageName == NCCUBANK_PKG }
+            target = apps.find {
+                it.packageName == NCCUBANK_PKG
+            }
         }
 
         return target?.let {
@@ -512,117 +615,261 @@ class MyAccessibilityService : AccessibilityService() {
     private fun toggleFlashlight(enable: Boolean): Boolean {
         return try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val id = cm.cameraIdList.find { cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true } ?: cm.cameraIdList[0]
+            val id = cm.cameraIdList.find {
+                cm.getCameraCharacteristics(it)
+                    .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            } ?: cm.cameraIdList[0]
+
             cm.setTorchMode(id, enable)
             true
-        } catch (e: Exception) { false }
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun startNavigation(dest: String, mode: String) {
         val uri = Uri.parse("google.navigation:q=${Uri.encode(dest)}&mode=$mode")
-        val mapsIntent = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.apps.maps")
+        val mapsIntent = Intent(Intent.ACTION_VIEW, uri)
+            .setPackage("com.google.android.apps.maps")
+
         if (!safeStartActivity(mapsIntent)) {
-            val geoIntent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(dest)}"))
+            val geoIntent = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse("geo:0,0?q=${Uri.encode(dest)}")
+            )
             safeStartActivity(geoIntent)
         }
     }
 
     private fun setVolume(p: Int) {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        am.setStreamVolume(AudioManager.STREAM_MUSIC, (p / 100.0 * am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)).toInt(), AudioManager.FLAG_SHOW_UI)
+        am.setStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            (p / 100.0 * am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)).toInt(),
+            AudioManager.FLAG_SHOW_UI
+        )
     }
 
     private fun adjustVolume(inc: Boolean) {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        am.adjustStreamVolume(AudioManager.STREAM_MUSIC, if (inc) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI)
+        am.adjustStreamVolume(
+            AudioManager.STREAM_MUSIC,
+            if (inc) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+            AudioManager.FLAG_SHOW_UI
+        )
     }
 
     private fun canWriteSettings(): Boolean = Settings.System.canWrite(this)
 
-    private fun adjustBrightness(p: Int) = Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, (p * 2.55).toInt().coerceIn(0, 255))
-    private fun adjustBrightnessRelative(inc: Boolean) { try { val cur = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS); val p = if (inc) ((cur/2.55)+20).toInt().coerceAtMost(100) else ((cur/2.55)-20).toInt().coerceAtLeast(0); adjustBrightness(p) } catch (e: Exception) {} }
+    private fun adjustBrightness(p: Int) =
+        Settings.System.putInt(
+            contentResolver,
+            Settings.System.SCREEN_BRIGHTNESS,
+            (p * 2.55).toInt().coerceIn(0, 255)
+        )
+
+    private fun adjustBrightnessRelative(inc: Boolean) {
+        try {
+            val cur = Settings.System.getInt(
+                contentResolver,
+                Settings.System.SCREEN_BRIGHTNESS
+            )
+
+            val p = if (inc) {
+                ((cur / 2.55) + 20).toInt().coerceAtMost(100)
+            } else {
+                ((cur / 2.55) - 20).toInt().coerceAtLeast(0)
+            }
+
+            adjustBrightness(p)
+        } catch (e: Exception) {
+        }
+    }
 
     private fun performClickOnText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
-        
+
         // 1. Try exact/contains match as provided
         val nodes = root.findAccessibilityNodeInfosByText(text)
-        if (!nodes.isNullOrEmpty()) { for (n in nodes) if (attemptClick(n)) return true }
+        if (!nodes.isNullOrEmpty()) {
+            for (n in nodes) {
+                if (attemptClick(n)) return true
+            }
+        }
+
         if (deepSearchAndClick(root, text)) return true
 
         // 2. Try matching after normalizing (removing spaces/hyphens)
-        val normalizedTarget = text.replace(" ", "").replace("-", "").lowercase()
+        val normalizedTarget = text
+            .replace(" ", "")
+            .replace("-", "")
+            .lowercase()
+
         return fuzzySearchAndClick(root, normalizedTarget)
     }
 
-    private fun fuzzySearchAndClick(node: AccessibilityNodeInfo, normalizedTarget: String): Boolean {
-        val nodeText = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").replace(" ", "").replace("-", "").lowercase()
+    private fun fuzzySearchAndClick(
+        node: AccessibilityNodeInfo,
+        normalizedTarget: String
+    ): Boolean {
+        val nodeText = (
+                node.text?.toString()
+                    ?: node.contentDescription?.toString()
+                    ?: ""
+                )
+            .replace(" ", "")
+            .replace("-", "")
+            .lowercase()
+
         if (nodeText.contains(normalizedTarget) && normalizedTarget.isNotEmpty()) {
             if (attemptClick(node)) return true
         }
+
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             if (fuzzySearchAndClick(child, normalizedTarget)) return true
         }
+
         return false
     }
 
-    private fun deepSearchAndClick(node: AccessibilityNodeInfo, text: String): Boolean {
-        if (node.text?.toString()?.contains(text, true) == true || node.contentDescription?.toString()?.contains(text, true) == true) if (attemptClick(node)) return true
-        for (i in 0 until node.childCount) { val c = node.getChild(i) ?: continue; if (deepSearchAndClick(c, text)) return true }
+    private fun deepSearchAndClick(
+        node: AccessibilityNodeInfo,
+        text: String
+    ): Boolean {
+        if (
+            node.text?.toString()?.contains(text, true) == true ||
+            node.contentDescription?.toString()?.contains(text, true) == true
+        ) {
+            if (attemptClick(node)) return true
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (deepSearchAndClick(child, text)) return true
+        }
+
         return false
     }
 
     private fun attemptClick(node: AccessibilityNodeInfo): Boolean {
-        if (node.isClickable) return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        var p = node.parent; while (p != null) { if (p.isClickable) return p.performAction(AccessibilityNodeInfo.ACTION_CLICK); p = p.parent }
+        if (node.isClickable) {
+            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+
+        var p = node.parent
+
+        while (p != null) {
+            if (p.isClickable) {
+                return p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
+            p = p.parent
+        }
+
         return false
     }
 
     private fun setupFloatingButton() {
         try {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-            val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.END; x = 0; y = 200 }
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.END
+                x = 0
+                y = 200
+            }
+
             floatingButton = Button(this).apply {
                 text = "🎤"
                 alpha = 0.7f
+
                 setOnTouchListener(object : View.OnTouchListener {
-                    private var ix = 0; private var iy = 0; private var itx = 0f; private var ity = 0f
+                    private var ix = 0
+                    private var iy = 0
+                    private var itx = 0f
+                    private var ity = 0f
+
                     override fun onTouch(v: View, e: MotionEvent): Boolean {
                         when (e.action) {
-                            MotionEvent.ACTION_DOWN -> { ix = params.x; iy = params.y; itx = e.rawX; ity = e.rawY; return true }
-                            MotionEvent.ACTION_MOVE -> { params.x = ix + (itx - e.rawX).toInt(); params.y = iy + (e.rawY - ity).toInt(); windowManager?.updateViewLayout(floatingButton, params); return true }
+                            MotionEvent.ACTION_DOWN -> {
+                                ix = params.x
+                                iy = params.y
+                                itx = e.rawX
+                                ity = e.rawY
+                                return true
+                            }
+
+                            MotionEvent.ACTION_MOVE -> {
+                                params.x = ix + (itx - e.rawX).toInt()
+                                params.y = iy + (e.rawY - ity).toInt()
+                                windowManager?.updateViewLayout(floatingButton, params)
+                                return true
+                            }
+
                             MotionEvent.ACTION_UP -> {
-                                if (Math.abs(e.rawX - itx) < 10 && Math.abs(e.rawY - ity) < 10) {
-                                    startActivity(Intent(this@MyAccessibilityService, MainActivity::class.java).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                                        putExtra("start_voice", true)
-                                    })
+                                if (
+                                    Math.abs(e.rawX - itx) < 10 &&
+                                    Math.abs(e.rawY - ity) < 10
+                                ) {
+                                    startActivity(
+                                        Intent(
+                                            this@MyAccessibilityService,
+                                            MainActivity::class.java
+                                        ).apply {
+                                            addFlags(
+                                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                                        Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                            )
+                                            putExtra("start_voice", true)
+                                        }
+                                    )
                                 }
                                 return true
                             }
                         }
+
                         return false
                     }
                 })
             }
+
             // Keep the overlay clear of the status bar / display cutout when the
             // system draws edge-to-edge (Android 15+).
             floatingButton?.setOnApplyWindowInsetsListener { v, insets ->
                 val top = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout()).top
-                } else 0
-                if (params.y < top) { params.y = top + 16; windowManager?.updateViewLayout(v, params) }
+                    insets.getInsets(
+                        android.view.WindowInsets.Type.systemBars() or
+                                android.view.WindowInsets.Type.displayCutout()
+                    ).top
+                } else {
+                    0
+                }
+
+                if (params.y < top) {
+                    params.y = top + 16
+                    windowManager?.updateViewLayout(v, params)
+                }
+
                 insets
             }
+
             windowManager?.addView(floatingButton, params)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
         CommandBridge.detachService(this)
-        floatingButton?.let { windowManager?.removeView(it) }
+        floatingButton?.let {
+            windowManager?.removeView(it)
+        }
     }
 }
