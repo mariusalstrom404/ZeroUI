@@ -22,6 +22,7 @@ import android.util.Log
 import android.widget.Button
 import com.example.myapplication.automation.AutomationEngine
 import com.example.myapplication.automation.FoodGorillaAutomation
+import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.IntentParser
@@ -40,6 +41,11 @@ class MyAccessibilityService : AccessibilityService() {
 
     private val automationEngine by lazy { AutomationEngine(this) }
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
+    private var dumpJob: Job? = null
+
+    object DebugConfig {
+        const val ENABLE_ACCESSIBILITY_TREE_DUMP = true
+    }
 
     companion object {
         // Throats API Integration
@@ -68,6 +74,19 @@ class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event?.let {
             Log.e("ZeroUIAutomation", "event=${it.eventType}, package=${it.packageName}, class=${it.className}")
+
+            if (DebugConfig.ENABLE_ACCESSIBILITY_TREE_DUMP) {
+                if (it.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                    it.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                ) {
+                    // Debounce dumping to avoid flooding Logcat
+                    dumpJob?.cancel()
+                    dumpJob = serviceScope.launch {
+                        delay(1000) // Wait for UI to settle
+                        AccessibilityTreeDumper.dump(rootInActiveWindow)
+                    }
+                }
+            }
         }
     }
 
