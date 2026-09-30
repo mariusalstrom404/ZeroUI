@@ -67,6 +67,31 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
      */
     data class AppOrder(val item: String, val restaurant: String?, val app: String) : AppIntent()
 
+    /**
+     * A Booking.com stay (see [HotelQuery]). Without [book] it searches [destination] (or [hotel])
+     * and reads back the results. With [book] and a [hotel] it opens that hotel, picks a room
+     * ([room] if given) and taps Reserve, stopping at the guest-details form: the user enters their
+     * details and completes the booking. With [book] but no [hotel], the UI asks which hotel first.
+     * Dates and guests are optional for a search (the app's current ones are kept); for a booking
+     * the UI collects whatever is missing (hotel, dates, guests, children's ages, room type) first.
+     */
+    data class HotelSearch(
+        val destination: String,
+        val checkIn: StayDate? = null,
+        val checkOut: StayDate? = null,
+        val hotel: String? = null,
+        val book: Boolean = false,
+        val room: String? = null,
+        val adults: Int? = null,
+        val children: Int? = null,
+        val childAges: List<Int> = emptyList(),
+        val rooms: Int? = null
+    ) : AppIntent() {
+        val guests: HotelQuery.Guests?
+            get() = adults?.takeIf { (children ?: 0) <= childAges.size }
+                ?.let { HotelQuery.Guests(it, childAges.take(children ?: 0), rooms ?: 1) }
+    }
+
     // --- Fallbacks ---
     /** No specific intent matched; [text] is the raw utterance for a best-effort click. */
     data class ClickText(val text: String) : AppIntent()

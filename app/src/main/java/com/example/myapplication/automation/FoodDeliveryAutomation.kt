@@ -39,11 +39,6 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
             "View your cart", "View cart", "View basket", "Go to cart", "Added to cart",
             "查看購物車", "前往購物車"
         )
-        /** Promo/permission popups that cover the screen after launch or when entering a shop. */
-        private val DISMISS = listOf(
-            "Not now", "Maybe later", "No thanks", "Skip", "Close", "Got it", "OK",
-            "稍後", "稍後再說", "以後再說", "略過", "跳過", "關閉", "知道了", "我知道了"
-        )
     }
 
     suspend fun order(packageName: String, restaurant: String, item: String): Result {
@@ -51,7 +46,7 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
 
         // 1. Search for the restaurant.
         delay(1500) // let the launched app draw its home screen
-        dismissPopups(packageName)
+        engine.dismissPopups(packageName)
         engine.report("Searching for “$restaurant”")
         if (!engine.typeIntoApp(restaurant, submit = true, packageName = packageName, timeoutMs = 15000)) {
             return Result.SEARCH_FAILED
@@ -61,7 +56,7 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
         // 2. Open the restaurant from the results.
         if (!openRestaurant(packageName, restaurant)) return Result.RESTAURANT_NOT_FOUND
         delay(2000)
-        dismissPopups(packageName)
+        engine.dismissPopups(packageName)
 
         // 3. Find the dish on the menu and open it.
         if (!openItem(packageName, item)) return Result.ITEM_NOT_FOUND
@@ -133,16 +128,5 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
             if (CART_INDICATORS.any { engine.findNode(Selector(text = it), packageName) != null }) return Result.ADDED
         }
         return Result.ADDED_UNVERIFIED
-    }
-
-    /** Closes a promo or permission popup if one is showing. Exact matches only, short wait. */
-    private suspend fun dismissPopups(packageName: String) {
-        val selectors = DISMISS.map { Selector(text = it, exact = true) } +
-            Selector(contentDescription = "Close", exact = true) +
-            Selector(contentDescription = "關閉", exact = true)
-        if (engine.clickAny(selectors, timeoutMs = 1200, packageName = packageName)) {
-            Log.e(LOG, "[ORDER] dismissed a popup")
-            delay(800)
-        }
     }
 }
