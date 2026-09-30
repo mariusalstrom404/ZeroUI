@@ -47,6 +47,65 @@ class TextMatchTest {
     }
 
     @Test
+    fun extraWordsBetweenTargetWordsStillMatch() {
+        val s = TextMatch.score("Hawaiian Personal Pizza Combo", "Hawaiian Pizza")
+        assertTrue(s in TextMatch.WORDS_MIN..TextMatch.WORDS_MAX)
+        // Uber Eats style button.
+        assertTrue(TextMatch.score("Add 1 to order • \$12.99", "Add to order") >= TextMatch.WORDS_MIN)
+    }
+
+    @Test
+    fun pluralsStemsAndTyposMatch() {
+        assertTrue(TextMatch.score("Hawaiian Pizzas", "Hawaiian Pizza") >= TextMatch.WORDS_MIN)
+        assertTrue(TextMatch.score("Hawaiian Pizza", "Hawaii Pizza") >= TextMatch.WORDS_MIN)
+        assertTrue(TextMatch.score("Margherita Pizza", "Margarita Pizza") >= TextMatch.WORDS_MIN)
+        assertTrue(TextMatch.score("Chicken Wings", "chiken wing") >= TextMatch.WORDS_MIN)
+    }
+
+    @Test
+    fun wordOrderMayDiffer() {
+        val swapped = TextMatch.score("Pizza, Hawaiian", "Hawaiian Pizza")
+        assertTrue(swapped >= TextMatch.WORDS_MIN)
+        assertTrue(swapped < TextMatch.score("Hawaiian Pizza (Large)", "Hawaiian Pizza"))
+    }
+
+    @Test
+    fun chineseWithExtraCharactersMatches() {
+        assertTrue(TextMatch.score("夏威夷個人披薩套餐", "夏威夷披薩") >= TextMatch.WORDS_MIN)
+    }
+
+    @Test
+    fun tighterMatchesRankHigher() {
+        val target = "Hawaiian Pizza"
+        val exact = TextMatch.score("Hawaiian Pizza", target)
+        val combo = TextMatch.score("Hawaiian Personal Pizza Combo", target)
+        val longText = TextMatch.score(
+            "Our famous Hawaiian style ham with pineapple on a thin crust pizza base, baked fresh daily", target
+        )
+        assertTrue(exact > combo)
+        assertTrue(combo > longText)
+    }
+
+    @Test
+    fun missingWordsDoNotMatch() {
+        // Every spoken word must be on screen: a different pizza is not a partial match.
+        assertEquals(TextMatch.NONE, TextMatch.score("Pepperoni Pizza", "Hawaiian Pizza"))
+        assertEquals(TextMatch.NONE, TextMatch.score("Transfer to Alice", "Transfer to Bob"))
+    }
+
+    @Test
+    fun shortWordsAreNeverFuzzy() {
+        // One letter apart, but short names must not be confused.
+        assertEquals(TextMatch.NONE, TextMatch.score("Transfer to Rob", "Transfer to Bob"))
+        assertEquals(TextMatch.NONE, TextMatch.score("Hot deals", "Hat"))
+    }
+
+    @Test
+    fun singleCjkCharacterDoesNotMatchInsideAWord() {
+        assertEquals(TextMatch.NONE, TextMatch.score("購買", "買"))
+    }
+
+    @Test
     fun blankInputsNeverMatch() {
         assertEquals(TextMatch.NONE, TextMatch.score(null, "Cart"))
         assertEquals(TextMatch.NONE, TextMatch.score("Cart", " "))

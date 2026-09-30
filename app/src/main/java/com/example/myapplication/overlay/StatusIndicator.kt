@@ -19,7 +19,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 
 /**
- * Floating pill at the top of the screen that tells the user what ZeroUI is doing right now
+ * Floating pill at the bottom of the screen, just above the navigation bar, that tells the user what ZeroUI is doing right now
  * ("Understanding…", "Looking for “Cart”", "Done", errors).
  *
  * It is an accessibility overlay marked NOT_TOUCHABLE, so the taps and swipes ZeroUI dispatches
@@ -41,7 +41,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         private const val NEEDS_INPUT_HIDE_MS = 5000L
         private const val ERROR_HIDE_MS = 6000L
         private const val FADE_MS = 200L
-        private const val TOP_MARGIN_DP = 8
+        private const val BOTTOM_MARGIN_DP = 12
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -66,13 +66,14 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT
     ).apply {
-        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        y = statusBarHeight() + dp(TOP_MARGIN_DP)
+        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        y = bottomOffset()
     }
 
     /** Shows [phase] with a [title] and optional [detail]. Final phases hide themselves after a few seconds. */
     fun show(phase: Phase, title: String, detail: String? = null): Unit = onMain {
         val view = ensureAttached() ?: return@onMain
+        updatePosition(view)
         generation++
         handler.removeCallbacks(hideRunnable)
         view.animate().cancel()
@@ -208,36 +209,42 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             elevation = dp(6).toFloat()
             addView(iconBox)
             addView(texts)
+        }
+    }
 
-            // Keep clear of the status bar / display cutout when drawn edge-to-edge.
-            setOnApplyWindowInsetsListener { v, insets ->
-                val top = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    insets.getInsets(
-                        android.view.WindowInsets.Type.systemBars() or
-                            android.view.WindowInsets.Type.displayCutout()
-                    ).top
-                } else {
-                    @Suppress("DEPRECATION")
-                    insets.systemWindowInsetTop
-                }
-                val wanted = top + dp(TOP_MARGIN_DP)
-                if (params.y != wanted && attached) {
-                    params.y = wanted
-                    windowManager.updateViewLayout(v, params)
-                }
-                insets
+    /** Re-applies the bottom offset, e.g. after rotation or a navigation-mode change. */
+    private fun updatePosition(view: View) {
+        val wanted = bottomOffset()
+        if (params.y != wanted) {
+            params.y = wanted
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (e: Exception) {
             }
         }
     }
 
+    /**
+     * Distance from the bottom edge that keeps the pill clear of the navigation bar (3-button bar
+     * or gesture handle). Read from the display's metrics rather than this window's own insets:
+     * once the pill sits above the bar its own bottom inset is 0, which would make it oscillate.
+     */
+    private fun bottomOffset(): Int = navigationBarHeight() + dp(BOTTOM_MARGIN_DP)
+
+    @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
+    private fun navigationBarHeight(): Int {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return windowManager.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                android.view.WindowInsets.Type.navigationBars() or
+                    android.view.WindowInsets.Type.displayCutout()
+            ).bottom
+        }
+        val id = context.resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        return if (id > 0) context.resources.getDimensionPixelSize(id) else dp(48)
+    }
+
     private fun dp(value: Int): Int = (value * density).toInt()
 
-    /** Initial guess until the first insets pass arrives. */
-    @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
-    private fun statusBarHeight(): Int {
-        val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
-        return if (id > 0) context.resources.getDimensionPixelSize(id) else dp(24)
-    }
 
     private inline fun onMain(crossinline block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else handler.post { block() }

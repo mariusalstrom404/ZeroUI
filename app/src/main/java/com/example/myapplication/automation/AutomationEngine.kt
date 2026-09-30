@@ -262,8 +262,11 @@ class AutomationEngine(private val service: AccessibilityService) {
         packageName: String? = targetPackage
     ): Boolean {
         val startTime = System.currentTimeMillis()
+        // Exact matches of any selector first, so a loose match on an earlier phrase
+        // ("Add to cart" ≈ some other label) can't beat an exact later one ("Add to order").
+        val passes = listOf(selectors.map { it.copy(exact = true) }, selectors.filterNot { it.exact })
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            for (selector in selectors) {
+            for (selector in passes.flatten()) {
                 val node = finder.find(selector, packageName) ?: continue
                 val target = finder.clickTarget(node)
                 if ((target ?: node).isEnabled) {
