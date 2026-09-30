@@ -4,11 +4,11 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -16,16 +16,48 @@ class AutomationEngine(private val service: AccessibilityService) {
 
     companion object {
         private const val TAG = "AutomationEngine"
+        private const val LOG = "ZeroUIAutomation"
         private const val DEFAULT_TIMEOUT = 10000L
-        private const val SCROLL_MAX_RETRIES = 5
+        private const val POLL_INTERVAL = 400L
+        private const val SCROLL_MAX_RETRIES = 8
+        /**
+         * How long a screen gets to populate before we start scrolling to look for an element.
+         * Scrolling immediately used to push the target off screen while the screen was still loading.
+         */
+        private const val SCROLL_SETTLE_MS = 2000L
     }
+
+    val finder = NodeFinder(service)
+
+    /** Package of the app the running workflow drives; searches default to its windows only. */
+    var targetPackage: String? = null
+        private set
 
     private var hasDumpedTree = false
 
+    /** Receives short, user-facing descriptions of what the engine is doing (for the status overlay). */
+    var onProgress: ((String) -> Unit)? = null
+
+    /** "Step 4 of 12" while [execute] runs, so progress messages say where in the workflow we are. */
+    private var stepLabel: String? = null
+
+    private fun report(message: String) {
+        onProgress?.invoke(stepLabel?.let { "$it · $message" } ?: message)
+    }
+
     suspend fun execute(steps: List<AutomationStep>): Boolean {
         hasDumpedTree = false
+        try {
+            return runSteps(steps)
+        } finally {
+            stepLabel = null
+        }
+    }
+
+    private suspend fun runSteps(steps: List<AutomationStep>): Boolean {
         for ((index, step) in steps.withIndex()) {
             Log.d(TAG, "Executing step ${index + 1}/${steps.size}: ${step.type} - ${step.description ?: ""}")
+            stepLabel = "Step ${index + 1} of ${steps.size}"
             val success = try {
                 when (step.type) {
                     StepType.OPEN_APP -> {
@@ -46,12 +78,13 @@ class AutomationEngine(private val service: AccessibilityService) {
                     StepType.CUSTOM -> step.action?.invoke() ?: true
                 }
             } catch (e: Exception) {
-                Log.e("ZeroUIAutomation", "Automation exception in step ${step.description}", e)
+                Log.e(LOG, "Automation exception in step ${step.description}", e)
                 false
             }
 
             if (!success && !step.optional) {
                 Log.e(TAG, "Step failed: ${step.description}. Aborting workflow.")
+                report("Failed: ${step.description ?: step.type.name.lowercase()}")
                 return false
             }
             Log.d(TAG, "Step success: ${step.description}")
@@ -61,75 +94,101 @@ class AutomationEngine(private val service: AccessibilityService) {
     }
 
     private fun openApp(packageName: String): Boolean {
+        report("Opening app")
         val intent = service.packageManager.getLaunchIntentForPackage(packageName)
         return if (intent != null) {
             intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             service.startActivity(intent)
+            targetPackage = packageName
             true
         } else {
             false
         }
     }
 
-    suspend fun waitForElement(selector: Selector?, timeoutMs: Long = DEFAULT_TIMEOUT, scrollIfNotFound: Boolean = false): AccessibilityNodeInfo? {
+    /**
+     * Polls until [selector] is visible in [packageName]'s windows (any app but ZeroUI when null).
+     * With [scrollIfNotFound], once the screen has had time to settle it scrolls the main list
+     * forward, and back up again if the end is reached first.
+     */
+    suspend fun waitForElement(
+        selector: Selector?,
+        timeoutMs: Long = DEFAULT_TIMEOUT,
+        scrollIfNotFound: Boolean = false,
+        packageName: String? = targetPackage
+    ): AccessibilityNodeInfo? {
         if (selector == null) return null
         val startTime = System.currentTimeMillis()
+        val settleMs = minOf(SCROLL_SETTLE_MS, timeoutMs / 3)
         var scrollCount = 0
-        
-        Log.d(TAG, "[FoodGorilla] Finding element: $selector")
-        Log.e("ZeroUIAutomation", "[FIND] target=${selector.testTag ?: selector.resourceId ?: selector.text ?: selector.contentDescription}")
-        
-        while (System.currentTimeMillis() - startTime < timeoutMs) {
-            val root = service.rootInActiveWindow
-            Log.e("ZeroUIAutomation", "root=${if (root == null) "NULL" else "OK"}, package=${root?.packageName}")
-            
-            if (root == null) {
-                Log.w(TAG, "[FoodGorilla] rootInActiveWindow is NULL")
-                delay(1000)
-                continue
-            }
-            
-            // Log tree for debugging only once after app open or when package changes
-            if (!hasDumpedTree && root.packageName?.contains("foodgorilla") == true) {
-                Log.d(TAG, "[FoodGorilla] --- UI TREE START ---")
-                logNodeTree(root, 0)
-                Log.d(TAG, "[FoodGorilla] --- UI TREE END ---")
-                hasDumpedTree = true
-            }
+        var scrollForward = true
+        var triedShowOnScreen = false
 
-            val node = findNodeRecursive(root, selector)
+        Log.e(LOG, "[FIND] target=$selector package=${packageName ?: "any"}")
+        report("Looking for “${selector.label()}”")
+
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            dumpTreeOnce(packageName)
+
+            val node = finder.find(selector, packageName)
             if (node != null) {
-                Log.e("ZeroUIAutomation", "Found element by $selector, package=${node.packageName}")
-                Log.d(TAG, "[FoodGorilla] Found element by $selector")
+                Log.e(LOG, "[FIND] FOUND class=${node.className} text=${node.text} desc=${node.contentDescription} bounds=${finder.boundsOf(node).toShortString()}")
                 return node
             }
-            
-            if (scrollIfNotFound && scrollCount < SCROLL_MAX_RETRIES) {
-                Log.d(TAG, "[FoodGorilla] Element not found, scrolling... ($scrollCount)")
-                if (scroll(true)) {
-                    scrollCount++
-                    hasDumpedTree = false // Allow dump after scroll
-                    delay(1000)
+
+            val settled = System.currentTimeMillis() - startTime >= settleMs
+            if (settled && !triedShowOnScreen) {
+                triedShowOnScreen = true
+                // The node may exist but be clipped/off screen (e.g. a pre-laid-out list row).
+                val offscreen = finder.find(selector, packageName, includeOffscreen = true)
+                if (offscreen != null && showOnScreen(offscreen)) {
+                    Log.e(LOG, "[FIND] element was off screen, asked app to show it")
+                    delay(600)
                     continue
                 }
             }
-            
-            delay(500)
+
+            if (scrollIfNotFound && settled && scrollCount < SCROLL_MAX_RETRIES) {
+                report("Scrolling to find “${selector.label()}”")
+                if (scroll(scrollForward, packageName)) {
+                    scrollCount++
+                    Log.d(TAG, "Element not found, scrolled ${if (scrollForward) "down" else "up"} ($scrollCount)")
+                    continue
+                }
+                if (scrollForward) {
+                    // Reached the end of the list; the target may be above where we started.
+                    scrollForward = false
+                    continue
+                }
+            }
+
+            delay(POLL_INTERVAL)
         }
-        Log.e("ZeroUIAutomation", "[FIND] TIMEOUT")
-        val root = service.rootInActiveWindow
-        if (root != null) {
-            Log.e("ZeroUIAutomation", "[FAILED] dumping tree for debug:")
-            logNodeTree(root, 0)
-        }
-        Log.e(TAG, "[FoodGorilla] FAILED: element not accessible: $selector")
+
+        Log.e(LOG, "[FIND] TIMEOUT target=$selector, dumping tree for debug:")
+        finder.roots(packageName).forEach { logNodeTree(it, 0) }
         return null
+    }
+
+    private fun showOnScreen(node: AccessibilityNodeInfo): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        return node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
+    }
+
+    private fun dumpTreeOnce(packageName: String?) {
+        if (hasDumpedTree || packageName == null) return
+        val roots = finder.roots(packageName)
+        if (roots.isEmpty()) return
+        Log.d(TAG, "--- UI TREE START ($packageName) ---")
+        roots.forEach { logNodeTree(it, 0) }
+        Log.d(TAG, "--- UI TREE END ---")
+        hasDumpedTree = true
     }
 
     private fun logNodeTree(node: AccessibilityNodeInfo, depth: Int) {
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
-        
+
         val info = StringBuilder("[TREE] ")
         info.append("depth=$depth ")
         info.append("class=${node.className} ")
@@ -137,13 +196,14 @@ class AutomationEngine(private val service: AccessibilityService) {
         info.append("text=${node.text} ")
         info.append("desc=${node.contentDescription} ")
         info.append("clickable=${node.isClickable} ")
-        info.append("focusable=${node.isFocusable} ")
+        info.append("enabled=${node.isEnabled} ")
+        info.append("visible=${node.isVisibleToUser} ")
         info.append("editable=${node.isEditable} ")
         info.append("scrollable=${node.isScrollable} ")
         info.append("childCount=${node.childCount} ")
         info.append("bounds=${bounds.toShortString()}")
-        
-        Log.e("ZeroUIAutomation", info.toString())
+
+        Log.e(LOG, info.toString())
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
@@ -151,264 +211,180 @@ class AutomationEngine(private val service: AccessibilityService) {
         }
     }
 
-    fun findNode(selector: Selector): AccessibilityNodeInfo? {
-        val root = service.rootInActiveWindow ?: return null
-        return findNodeRecursive(root, selector)
-    }
+    fun findNode(selector: Selector, packageName: String? = targetPackage): AccessibilityNodeInfo? =
+        finder.find(selector, packageName)
 
-    private fun findNodeRecursive(node: AccessibilityNodeInfo, selector: Selector): AccessibilityNodeInfo? {
-        if (matchNode(node, selector)) return node
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findNodeRecursive(child, selector)
-            if (found != null) return found
-        }
-        return null
-    }
-
-    private fun matchNode(node: AccessibilityNodeInfo, selector: Selector): Boolean {
-        // Class exclusion check
-        if (selector.classNameExclude != null && node.className?.contains(selector.classNameExclude) == true) {
-            return false
-        }
-
-        // Priority 1: resourceId / testTag
-        val targetId = selector.testTag ?: selector.resourceId
-        if (targetId != null) {
-            val actualId = node.viewIdResourceName
-            if (actualId != null && (actualId == targetId || actualId.endsWith(":id/$targetId") || actualId.contains(targetId))) {
-                Log.e("ZeroUIAutomation", "[FIND] ${selector.testTag ?: "element"} byId = FOUND")
-                return true
+    /**
+     * Finds [selector] and clicks it. If the element (or its button) is present but disabled —
+     * e.g. a checkout button that enables once the cart loads — it keeps waiting instead of
+     * clicking something that ignores the click.
+     */
+    suspend fun clickElement(
+        selector: Selector?,
+        timeoutMs: Long = DEFAULT_TIMEOUT,
+        scrollIfNotFound: Boolean = true,
+        packageName: String? = targetPackage
+    ): Boolean {
+        if (selector == null) return false
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) break
+            val node = waitForElement(selector, remaining, scrollIfNotFound, packageName) ?: break
+            if (!node.refresh()) { // UI changed between find and click; look again
+                delay(POLL_INTERVAL)
+                continue
             }
-            // Compose testTag from extras
-            val testTag = node.extras?.getString("androidx.compose.ui.semantics.testTag")
-            if (testTag != null && testTag.contains(targetId)) {
-                Log.e("ZeroUIAutomation", "[FIND] ${selector.testTag ?: "element"} byId = FOUND (extras)")
-                return true
+            val target = finder.clickTarget(node)
+            if (!(target ?: node).isEnabled) {
+                Log.e(LOG, "[CLICK] $selector is disabled, waiting")
+                report("Waiting for “${selector.label()}” to become available")
+                delay(POLL_INTERVAL)
+                continue
             }
+            report("Tapping “${selector.label()}”")
+            return performClick(node, target)
         }
-
-        // Priority 2: contentDescription
-        if (selector.contentDescription != null) {
-            val desc = node.contentDescription?.toString()
-            if (desc != null && desc.contains(selector.contentDescription, ignoreCase = true)) {
-                Log.e("ZeroUIAutomation", "[FIND] ${selector.testTag ?: "element"} byDescription=FOUND")
-                return true
-            }
-        }
-
-        // Priority 3: text
-        if (selector.text != null) {
-            val nodeText = node.text?.toString() ?: node.contentDescription?.toString()
-            if (nodeText != null && nodeText.contains(selector.text, ignoreCase = true)) {
-                // Safety check: if this node is nearly full screen, it's likely a container, not the target text node.
-                val bounds = Rect()
-                node.getBoundsInScreen(bounds)
-                val metrics = service.resources.displayMetrics
-                val isTooBig = (bounds.width() > metrics.widthPixels * 0.9 && bounds.height() > metrics.heightPixels * 0.9)
-                
-                if (!isTooBig) {
-                    Log.e("ZeroUIAutomation", "[TEXT_MATCH] target=${selector.text}")
-                    Log.e("ZeroUIAutomation", "[TEXT_MATCH] exact node: class=${node.className} text=$nodeText bounds=${bounds.toShortString()}")
-                    return true
-                }
-            }
-        }
-
-        // Priority 4: Semantic Fallback for Search Bar
-        if (selector.testTag == "search_bar" || selector.testTag == "menu_search_bar") {
-            if (node.className?.contains("EditText") == true && node.isEditable) {
-                if (hasChildWithText(node, "Search for food or restaurants") || 
-                    hasChildWithText(node, "Search") ||
-                    node.text?.toString()?.contains("Search", ignoreCase = true) == true) {
-                    Log.e("ZeroUIAutomation", "[FIND] search_bar byEditable = FOUND")
-                    return true
-                }
-            }
-        }
-        
+        Log.e(TAG, "Failed to find element to click: $selector")
+        report("Couldn't find “${selector.label()}”")
         return false
     }
 
-    private fun hasChildWithText(node: AccessibilityNodeInfo, targetText: String): Boolean {
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val text = child.text?.toString() ?: child.contentDescription?.toString() ?: ""
-            if (text.contains(targetText, ignoreCase = true)) return true
-            if (hasChildWithText(child, targetText)) return true
+    /** Clicks the first of [selectors] (in priority order) that appears within [timeoutMs]. No scrolling. */
+    suspend fun clickAny(
+        selectors: List<Selector>,
+        timeoutMs: Long = DEFAULT_TIMEOUT,
+        packageName: String? = targetPackage
+    ): Boolean {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            for (selector in selectors) {
+                val node = finder.find(selector, packageName) ?: continue
+                val target = finder.clickTarget(node)
+                if ((target ?: node).isEnabled) {
+                    report("Tapping “${selector.label()}”")
+                    return performClick(node, target)
+                }
+            }
+            delay(POLL_INTERVAL)
         }
+        Log.e(LOG, "[CLICK] none of $selectors found")
+        report("Couldn't find “${selectors.firstOrNull()?.label() ?: "element"}”")
         return false
     }
 
-    suspend fun clickElement(selector: Selector?, timeoutMs: Long = DEFAULT_TIMEOUT): Boolean {
-        val node = waitForElement(selector, timeoutMs, scrollIfNotFound = true) ?: run {
-            Log.e(TAG, "Failed to find element to click: $selector")
+    private suspend fun performClick(node: AccessibilityNodeInfo, target: AccessibilityNodeInfo?): Boolean {
+        if (target != null) {
+            Log.e(LOG, "[CLICK] target class=${target.className} bounds=${finder.boundsOf(target).toShortString()}")
+            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                Log.e(LOG, "[CLICK] ACTION_CLICK dispatched")
+                return true
+            }
+            Log.e(LOG, "[CLICK] ACTION_CLICK rejected, falling back to tap")
+        } else {
+            Log.e(LOG, "[CLICK] no safe clickable ancestor, tapping the element itself")
+        }
+
+        // Tap the element's own on-screen bounds rather than a far-away ancestor.
+        val point = finder.visibleCenter(node) ?: run {
+            Log.e(LOG, "[CLICK] element has no visible area")
             return false
         }
-        return performClick(node)
+        Log.e(LOG, "[CLICK] tap at (${point.x}, ${point.y})")
+        return clickAt(point.x, point.y)
     }
 
-    private suspend fun performClick(node: AccessibilityNodeInfo): Boolean {
-        // Find clickable ancestor starting from the node itself
-        var current: AccessibilityNodeInfo? = node
-        var depth = 0
-        var clickableAncestor: AccessibilityNodeInfo? = null
-        
-        Log.e("ZeroUIAutomation", "[PARENT_CHAIN] --- START ---")
-        while (current != null) {
-            val bounds = Rect()
-            current.getBoundsInScreen(bounds)
-            Log.e("ZeroUIAutomation", "[PARENT_CHAIN] depth=$depth class=${current.className} text=${current.text} clickable=${current.isClickable} focusable=${current.isFocusable} bounds=${bounds.toShortString()} children=${current.childCount}")
-            
-            if (clickableAncestor == null && current.isClickable) {
-                clickableAncestor = current
-                Log.e("ZeroUIAutomation", "[TEXT_MATCH] parent $depth: class=${current.className} clickable=TRUE")
-            } else if (clickableAncestor == null) {
-                Log.e("ZeroUIAutomation", "[TEXT_MATCH] parent $depth: class=${current.className} clickable=false")
-            }
-            
-            val nextParent = current.parent
-            current = nextParent
-            depth++
-        }
-        Log.e("ZeroUIAutomation", "[PARENT_CHAIN] --- END ---")
+    suspend fun inputText(
+        selector: Selector?,
+        text: String,
+        timeoutMs: Long = DEFAULT_TIMEOUT,
+        packageName: String? = targetPackage
+    ): Boolean {
+        if (selector == null) return false
+        val found = waitForElement(selector, timeoutMs, packageName = packageName) ?: return false
+        val node = finder.editableTarget(found)
+        report("Typing “$text”")
 
-        if (clickableAncestor != null) {
-            Log.e("ZeroUIAutomation", "[TEXT_MATCH] clickable ancestor FOUND: class=${clickableAncestor.className}")
-            val success = clickableAncestor.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (success) Log.e("ZeroUIAutomation", "[CLICK] ancestor ACTION_CLICK dispatched")
-            return success
-        }
-        
-        // Fallback: use gesture on the ORIGINAL node bounds
-        Log.e("ZeroUIAutomation", "[CLICK] no clickable ancestor found, using gesture fallback")
-        val bounds = Rect()
-        node.getBoundsInScreen(bounds)
-        Log.e("ZeroUIAutomation", "[CLICK] final target bounds=${bounds.toShortString()} center=(${bounds.centerX()}, ${bounds.centerY()})")
-        
-        val success = clickAt(bounds.centerX(), bounds.centerY())
-        if (success) Log.e("ZeroUIAutomation", "[CLICK] gesture DISPATCHED")
-        return success
-    }
+        Log.e(LOG, "[INPUT] target = ${node.className} editable=${node.isEditable}")
+        Log.e(LOG, "[INPUT] value = $text")
 
-    suspend fun inputText(selector: Selector?, text: String, timeoutMs: Long = DEFAULT_TIMEOUT): Boolean {
-        val node = waitForElement(selector, timeoutMs) ?: return false
-        
-        Log.e("ZeroUIAutomation", "[INPUT] target = ${node.className}")
-        Log.e("ZeroUIAutomation", "[INPUT] value = $text")
-        
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         delay(200)
-        
+
         val arguments = Bundle()
         arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         val actionResult = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-        Log.e("ZeroUIAutomation", "[INPUT] ACTION_SET_TEXT result=$actionResult")
-        
+        Log.e(LOG, "[INPUT] ACTION_SET_TEXT result=$actionResult")
+
         if (actionResult) {
             // Wait for UI to update
             delay(800)
-            
-            // Reacquire root and find fresh node for verification
+
             val startTime = System.currentTimeMillis()
             while (System.currentTimeMillis() - startTime < 3000) {
-                Log.e("ZeroUIAutomation", "[INPUT] reacquiring root...")
-                val freshRoot = service.rootInActiveWindow
-                if (freshRoot != null) {
-                    val freshNode = findNodeRecursive(freshRoot, selector!!)
-                    val freshText = freshNode?.text?.toString() ?: ""
-                    Log.e("ZeroUIAutomation", "[INPUT] freshText=$freshText")
-                    
-                    if (freshText.contains(text, ignoreCase = true)) {
-                        Log.e("ZeroUIAutomation", "[INPUT] VERIFIED SUCCESS")
-                        return true
-                    }
-                    
-                    // Second success condition: Check if the text appears elsewhere (e.g. search results)
-                    if (findNodeByTextRecursive(freshRoot, text, excludeEditText = true) != null) {
-                        Log.e("ZeroUIAutomation", "[INPUT] VERIFIED SUCCESS (Result found on screen)")
-                        return true
-                    }
+                val freshNode = finder.find(selector, packageName)?.let { finder.editableTarget(it) }
+                val freshText = freshNode?.text?.toString() ?: ""
+                Log.e(LOG, "[INPUT] freshText=$freshText")
+
+                if (freshText.contains(text, ignoreCase = true)) {
+                    Log.e(LOG, "[INPUT] VERIFIED SUCCESS")
+                    return true
+                }
+
+                // Second success condition: the text appears elsewhere (e.g. search results)
+                if (finder.find(Selector(text = text, classNameExclude = "EditText"), packageName) != null) {
+                    Log.e(LOG, "[INPUT] VERIFIED SUCCESS (Result found on screen)")
+                    return true
                 }
                 delay(300)
             }
-            Log.e("ZeroUIAutomation", "[INPUT] VERIFICATION TIMEOUT")
+            Log.e(LOG, "[INPUT] VERIFICATION TIMEOUT")
             return true // Still return true if action succeeded, to avoid blocking workflow
         }
-        
-        Log.e("ZeroUIAutomation", "[INPUT] FAILED")
+
+        Log.e(LOG, "[INPUT] FAILED")
         return false
     }
 
-    private fun findNodeByTextRecursive(node: AccessibilityNodeInfo, text: String, excludeEditText: Boolean): AccessibilityNodeInfo? {
-        val nodeText = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
-        if (nodeText.contains(text, ignoreCase = true)) {
-            if (!excludeEditText || node.className?.contains("EditText") != true) {
-                return node
-            }
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findNodeByTextRecursive(child, text, excludeEditText)
-            if (found != null) return found
-        }
-        return null
-    }
-
-    suspend fun scroll(down: Boolean): Boolean {
-        val root = service.rootInActiveWindow ?: return false
-        val scrollableNode = findScrollableNode(root)
-        
-        if (scrollableNode != null) {
+    /**
+     * Scrolls the main list of the target app's top-most window.
+     * Returns false when the list can't scroll further in that direction.
+     */
+    suspend fun scroll(down: Boolean, packageName: String? = targetPackage): Boolean {
+        val container = finder.scrollContainer(packageName)
+        if (container != null) {
             val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-            if (scrollableNode.performAction(action)) {
-                delay(1000)
+            // Lists only offer the action while they can still move that way.
+            if (container.actionList.none { it.id == action }) return false
+            if (container.performAction(action)) {
+                delay(800)
                 return true
             }
+            return dispatchScrollGesture(down, finder.boundsOf(container))
         }
-        
-        // Fallback to gesture
-        return dispatchScrollGesture(down)
+
+        // No scrollable node exposed: swipe inside the app's window (never over ZeroUI's).
+        val root = finder.roots(packageName).firstOrNull() ?: return false
+        return dispatchScrollGesture(down, finder.boundsOf(root))
     }
 
-    private fun findScrollableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isScrollable) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findScrollableNode(child)
-            if (found != null) return found
-        }
-        return null
-    }
-
-    private suspend fun dispatchScrollGesture(down: Boolean): Boolean {
-        val displayMetrics = service.resources.displayMetrics
-        val width = displayMetrics.widthPixels
-        val height = displayMetrics.heightPixels
-
-        val startX = width / 2
-        val startY = if (down) (height * 0.8).toInt() else (height * 0.2).toInt()
-        val endY = if (down) (height * 0.2).toInt() else (height * 0.8).toInt()
+    private suspend fun dispatchScrollGesture(down: Boolean, area: Rect): Boolean {
+        if (area.isEmpty) return false
+        val x = area.centerX().toFloat()
+        val top = area.top + area.height() * 0.25f
+        val bottom = area.top + area.height() * 0.75f
 
         val path = Path()
-        path.moveTo(startX.toFloat(), startY.toFloat())
-        path.lineTo(startX.toFloat(), endY.toFloat())
+        path.moveTo(x, if (down) bottom else top)
+        path.lineTo(x, if (down) top else bottom)
 
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 500))
             .build()
 
-        return suspendCoroutine { continuation ->
-            service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    continuation.resume(true)
-                }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    continuation.resume(false)
-                }
-            }, null)
-        }
+        val dispatched = dispatch(gesture)
+        if (dispatched) delay(800)
+        return dispatched
     }
 
     private suspend fun clickAt(x: Int, y: Int): Boolean {
@@ -417,16 +393,19 @@ class AutomationEngine(private val service: AccessibilityService) {
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
             .build()
-            
-        return suspendCoroutine { continuation ->
-            service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    continuation.resume(true)
-                }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    continuation.resume(false)
-                }
-            }, null)
-        }
+        return dispatch(gesture)
+    }
+
+    private suspend fun dispatch(gesture: GestureDescription): Boolean = suspendCoroutine { continuation ->
+        val accepted = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                continuation.resume(true)
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                continuation.resume(false)
+            }
+        }, null)
+        // If the system refuses the gesture no callback ever fires; don't hang the workflow.
+        if (!accepted) continuation.resume(false)
     }
 }
