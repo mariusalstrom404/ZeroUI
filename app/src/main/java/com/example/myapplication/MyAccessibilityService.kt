@@ -22,11 +22,14 @@ import android.util.Log
 import android.widget.Button
 import com.example.myapplication.automation.AutomationEngine
 import com.example.myapplication.automation.FoodGorillaAutomation
+import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.IntentParser
 import com.example.myapplication.nlp.ml.ParserFactory
+import com.example.myapplication.overlay.StatusIndicator
+import com.example.myapplication.overlay.StatusIndicator.Phase
 import kotlinx.coroutines.*
 import java.util.regex.Pattern
 
@@ -42,6 +45,13 @@ class MyAccessibilityService : AccessibilityService() {
     private val automationEngine by lazy { AutomationEngine(this) }
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
     private var dumpJob: Job? = null
+
+    private var statusIndicator: StatusIndicator? = null
+
+    /** How the command currently being processed ended; set by [fail] and [ask]. */
+    private enum class Outcome { OK, NEEDS_INPUT, FAILED }
+    private var outcome = Outcome.OK
+    private var lastReply: String? = null
 
     object DebugConfig {
         const val ENABLE_ACCESSIBILITY_TREE_DUMP = true
@@ -75,7 +85,8 @@ class MyAccessibilityService : AccessibilityService() {
         event?.let {
             Log.e("ZeroUIAutomation", "event=${it.eventType}, package=${it.packageName}, class=${it.className}")
 
-            if (DebugConfig.ENABLE_ACCESSIBILITY_TREE_DUMP) {
+            // Our own overlays/dialog change constantly while we work; don't dump the tree for them.
+            if (DebugConfig.ENABLE_ACCESSIBILITY_TREE_DUMP && it.packageName != packageName) {
                 if (it.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
                     it.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
                 ) {
@@ -96,6 +107,8 @@ class MyAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         CommandBridge.attachService(this)
         setupFloatingButton()
+        statusIndicator = StatusIndicator(this, getSystemService(WINDOW_SERVICE) as WindowManager)
+        automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
     }
@@ -111,27 +124,89 @@ class MyAccessibilityService : AccessibilityService() {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
         try {
             val cleanCommand = command.replace(",", "").replace(".", "").replace("?", "")
-            val individualCommands = cleanCommand.split(Regex(" then | and | next ", RegexOption.IGNORE_CASE))
+            val individualCommands = cleanCommand
+                .split(Regex(" then | and | next ", RegexOption.IGNORE_CASE))
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
 
-            for (cmd in individualCommands) {
-                val trimmed = cmd.trim()
-                if (trimmed.isNotEmpty()) {
-                    processSingleCommand(trimmed)
+            var failure: String? = null
+            var question: String? = null
+            for ((index, cmd) in individualCommands.withIndex()) {
+                val progress = if (individualCommands.size > 1) "Command ${index + 1} of ${individualCommands.size}" else null
+                processSingleCommand(cmd, progress)
+                when (outcome) {
+                    Outcome.FAILED -> if (failure == null) failure = lastReply
+                    Outcome.NEEDS_INPUT -> question = lastReply
+                    Outcome.OK -> {}
+                }
+                if (index < individualCommands.lastIndex) {
+                    statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${individualCommands[index + 1]}")
                     delay(4000)
                 }
+            }
+
+            when {
+                failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
+                question != null -> statusIndicator?.show(Phase.NEEDS_INPUT, "Need more information", question)
+                else -> statusIndicator?.show(Phase.SUCCESS, "Done", lastReply)
             }
         } finally {
             CommandBridge.postStatus(CommandBridge.Status.FINISHED)
         }
     }
 
-    private suspend fun processSingleCommand(command: String) {
+    private suspend fun processSingleCommand(command: String, progress: String? = null) {
         Log.d("NLPControl", "Processing: $command")
+        outcome = Outcome.OK
+        lastReply = null
+        statusIndicator?.show(
+            Phase.UNDERSTANDING,
+            "Understanding your request…",
+            listOfNotNull(progress, "“$command”").joinToString(" · ")
+        )
         val intent = parser.parse(command)
         if (intent !is AppIntent.RepeatLast) {
             lastRawCommand = command
         }
-        dispatch(intent, command)
+        statusIndicator?.show(Phase.WORKING, describe(intent, command), progress)
+        try {
+            dispatch(intent, command)
+        } catch (e: CancellationException) {
+            throw e // replaced by a newer command; that one owns the indicator now
+        } catch (e: Exception) {
+            Log.e("NLPControl", "Command failed: $command", e)
+            fail("Sorry, something went wrong while doing that.")
+        }
+    }
+
+    /** What the indicator says while [intent] runs. */
+    private fun describe(intent: AppIntent, rawCommand: String): String = when (intent) {
+        AppIntent.CheckBalance -> "Checking your balance"
+        is AppIntent.Transfer -> "Transferring money"
+        AppIntent.TransactionHistory -> "Opening transaction history"
+        AppIntent.TopUp -> "Opening top up"
+        is AppIntent.FoodSearch -> "Searching FoodGorilla"
+        is AppIntent.FoodOrder -> "Ordering on FoodGorilla"
+        AppIntent.FoodCart -> "Opening your cart"
+        AppIntent.FoodCheckout -> "Going to checkout"
+        is AppIntent.FoodMenu -> "Opening the menu"
+        is AppIntent.ThroatsPost -> "Posting to Throats"
+        is AppIntent.ThroatsRepost -> "Reposting"
+        is AppIntent.ThroatsComment -> "Commenting"
+        is AppIntent.Flashlight -> if (intent.enable) "Turning on the flashlight" else "Turning off the flashlight"
+        AppIntent.Battery -> "Checking the battery"
+        is AppIntent.Volume -> "Adjusting the volume"
+        is AppIntent.Brightness -> "Adjusting the brightness"
+        AppIntent.Greeting -> "Saying hello"
+        AppIntent.SaveHistory -> "Saving history"
+        AppIntent.ClearHistory -> "Clearing history"
+        AppIntent.RepeatLast -> "Repeating your last command"
+        AppIntent.TakeScreenshot -> "Taking a screenshot"
+        is AppIntent.CameraAction -> "Opening the camera"
+        is AppIntent.Navigate -> "Starting navigation"
+        is AppIntent.OpenApp -> "Opening ${intent.name}".trim()
+        is AppIntent.ClickText -> "Looking for “${intent.text}” on screen"
+        AppIntent.Unknown -> "Looking for “$rawCommand” on screen"
     }
 
     /** Executes a parsed [AppIntent] using the accessibility/system capabilities. */
@@ -140,14 +215,18 @@ class MyAccessibilityService : AccessibilityService() {
             // NCCUbank: Check Balance
             AppIntent.CheckBalance -> {
                 val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_DASHBOARD)).setPackage(NCCUBANK_PKG)
-                if (safeStartActivity(viewIntent) || openAppByName("NCCUbank")) {
-                    delay(2500)
-                    val balanceCard = findNodeByContentDescription("Wallet Balance Display")
+                val launched = if (safeStartActivity(viewIntent)) NCCUBANK_PKG else launchAppByName("NCCUbank")
+                if (launched != null) {
+                    val balanceCard = automationEngine.waitForElement(
+                        Selector(contentDescription = "Wallet Balance Display", exact = true),
+                        timeoutMs = 6000,
+                        packageName = launched
+                    )
                     val balance = if (balanceCard != null) findCurrencyTextInSubtree(balanceCard) else null
                     if (balance != null) sendReply("Your balance is $balance.")
-                    else sendReply("I opened NCCUbank but couldn't find the balance on screen.")
+                    else fail("I opened NCCUbank but couldn't find the balance on screen.")
                 } else {
-                    sendReply("I couldn't find the NCCUbank app on your device.")
+                    fail("I couldn't find the NCCUbank app on your device.")
                 }
             }
 
@@ -161,24 +240,28 @@ class MyAccessibilityService : AccessibilityService() {
 
                     if (safeStartActivity(viewIntent)) {
                         sendReply("Initiating transfer of $amount to $recipient.")
-                        delay(4000)
-                        if (findNodeByText("Success") != null) sendReply("Transfer completed successfully!")
+                        val success = automationEngine.waitForElement(
+                            Selector(text = "Success", exact = true),
+                            timeoutMs = 6000,
+                            packageName = NCCUBANK_PKG
+                        )
+                        if (success != null) sendReply("Transfer completed successfully!")
                     } else {
                         // Deep link failed, try manual navigation
-                        if (openAppByName("NCCUbank")) {
-                            delay(2500)
-                            if (performClickOnText("Transfer") || performClickOnText("Transfer Button")) {
+                        val pkg = launchAppByName("NCCUbank")
+                        if (pkg != null) {
+                            if (performClickOnText("Transfer", "Transfer Button", packageName = pkg, timeoutMs = 6000)) {
                                 delay(1500)
                                 sendReply("I've opened the transfer screen in NCCUbank. Please confirm the details.")
                             } else {
-                                sendReply("I couldn't start the transfer. Is the NCCUbank app up to date?")
+                                fail("I couldn't start the transfer. Is the NCCUbank app up to date?")
                             }
                         } else {
-                            sendReply("I couldn't find the NCCUbank app.")
+                            fail("I couldn't find the NCCUbank app.")
                         }
                     }
                 } else {
-                    sendReply("I need both an amount and a recipient to make a transfer.")
+                    ask("I need both an amount and a recipient to make a transfer.")
                 }
             }
 
@@ -186,15 +269,15 @@ class MyAccessibilityService : AccessibilityService() {
             AppIntent.TransactionHistory -> {
                 val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_HISTORY)).setPackage(NCCUBANK_PKG)
                 if (!safeStartActivity(viewIntent)) {
-                    if (openAppByName("NCCUbank")) {
-                        delay(2500)
-                        if (performClickOnText("History") || performClickOnText("History Button") || performClickOnText("Transactions")) {
+                    val pkg = launchAppByName("NCCUbank")
+                    if (pkg != null) {
+                        if (performClickOnText("History", "History Button", "Transactions", packageName = pkg, timeoutMs = 6000)) {
                             sendReply("Showing your transaction history.")
                         } else {
-                            sendReply("I couldn't find the history button in NCCUbank.")
+                            fail("I couldn't find the history button in NCCUbank.")
                         }
                     } else {
-                        sendReply("NCCUbank is not installed.")
+                        fail("NCCUbank is not installed.")
                     }
                 } else {
                     sendReply("Showing your transaction history.")
@@ -205,13 +288,15 @@ class MyAccessibilityService : AccessibilityService() {
             AppIntent.TopUp -> {
                 val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_TOP_UP)).setPackage(NCCUBANK_PKG)
                 if (!safeStartActivity(viewIntent)) {
-                    if (openAppByName("NCCUbank")) {
-                        delay(2500)
-                        if (performClickOnText("Top-up") || performClickOnText("Top Up") || performClickOnText("Top-up Button") || performClickOnText("Deposit")) {
+                    val pkg = launchAppByName("NCCUbank")
+                    if (pkg != null) {
+                        if (performClickOnText("Top-up", "Top Up", "Top-up Button", "Deposit", packageName = pkg, timeoutMs = 6000)) {
                             sendReply("Opening the top up screen.")
                         } else {
-                            sendReply("I couldn't find the top up button.")
+                            fail("I couldn't find the top up button.")
                         }
+                    } else {
+                        fail("NCCUbank is not installed.")
                     }
                 } else {
                     sendReply("Opening the top up screen.")
@@ -225,10 +310,10 @@ class MyAccessibilityService : AccessibilityService() {
                     if (safeStartActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(FOODGORILLA_PKG))) {
                         sendReply("Searching for ${intent.query} on FoodGorilla.")
                     } else {
-                        sendReply("I couldn't open FoodGorilla. Is it installed?")
+                        fail("I couldn't open FoodGorilla. Is it installed?")
                     }
                 } else {
-                    sendReply("What would you like to search for on FoodGorilla?")
+                    ask("What would you like to search for on FoodGorilla?")
                 }
             }
 
@@ -255,7 +340,7 @@ class MyAccessibilityService : AccessibilityService() {
                     if (success) {
                         sendReply("FoodGorilla automation reached checkout successfully.")
                     } else {
-                        sendReply("FoodGorilla automation failed. Check logs for details.")
+                        fail("FoodGorilla automation failed. Check logs for details.")
                     }
                 } else if (intent.itemId != null) {
                     val uri = Uri.parse("$URI_FG_BUY_NOW?itemId=${intent.itemId}&quantity=1")
@@ -263,10 +348,10 @@ class MyAccessibilityService : AccessibilityService() {
                     if (safeStartActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(FOODGORILLA_PKG))) {
                         sendReply("Ordering item ${intent.itemId} from FoodGorilla.")
                     } else {
-                        sendReply("I couldn't complete the order on FoodGorilla.")
+                        fail("I couldn't complete the order on FoodGorilla.")
                     }
                 } else {
-                    sendReply("What would you like to order?")
+                    ask("What would you like to order?")
                 }
             }
 
@@ -275,7 +360,7 @@ class MyAccessibilityService : AccessibilityService() {
                 if (safeStartActivity(Intent(Intent.ACTION_VIEW, Uri.parse(URI_FG_CART)).setPackage(FOODGORILLA_PKG))) {
                     sendReply("Opening your FoodGorilla cart.")
                 } else {
-                    sendReply("I couldn't open the FoodGorilla cart.")
+                    fail("I couldn't open the FoodGorilla cart.")
                 }
             }
 
@@ -283,7 +368,7 @@ class MyAccessibilityService : AccessibilityService() {
                 if (safeStartActivity(Intent(Intent.ACTION_VIEW, Uri.parse(URI_FG_CHECKOUT)).setPackage(FOODGORILLA_PKG))) {
                     sendReply("Taking you to FoodGorilla checkout.")
                 } else {
-                    sendReply("I couldn't open the FoodGorilla checkout.")
+                    fail("I couldn't open the FoodGorilla checkout.")
                 }
             }
 
@@ -294,10 +379,10 @@ class MyAccessibilityService : AccessibilityService() {
                     if (safeStartActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(FOODGORILLA_PKG))) {
                         sendReply("Opening the menu for ${intent.restaurant} on FoodGorilla.")
                     } else {
-                        sendReply("I couldn't find that restaurant menu.")
+                        fail("I couldn't find that restaurant menu.")
                     }
                 } else {
-                    sendReply("Which restaurant's menu would you like to see?")
+                    ask("Which restaurant's menu would you like to see?")
                 }
             }
 
@@ -313,7 +398,7 @@ class MyAccessibilityService : AccessibilityService() {
                     )
                     sendReply("I've posted that to Throats for you.")
                 } else {
-                    sendReply("What would you like me to post?")
+                    ask("What would you like me to post?")
                 }
             }
 
@@ -330,7 +415,7 @@ class MyAccessibilityService : AccessibilityService() {
                     )
                     sendReply("Okay, I've reposted that.")
                 } else {
-                    sendReply("I couldn't find a post ID to repost.")
+                    fail("I couldn't find a post ID to repost.")
                 }
             }
 
@@ -348,7 +433,7 @@ class MyAccessibilityService : AccessibilityService() {
                     )
                     sendReply("Comment posted successfully.")
                 } else {
-                    sendReply("I need a post and content to comment.")
+                    ask("I need a post and content to comment.")
                 }
             }
 
@@ -362,7 +447,7 @@ class MyAccessibilityService : AccessibilityService() {
                             "Flashlight is now off."
                     )
                 } else {
-                    sendReply("I couldn't toggle the flashlight. Make sure I have camera permissions.")
+                    fail("I couldn't toggle the flashlight. Make sure I have camera permissions.")
                 }
             }
 
@@ -395,7 +480,7 @@ class MyAccessibilityService : AccessibilityService() {
             // Brightness
             is AppIntent.Brightness -> {
                 if (!canWriteSettings()) {
-                    sendReply("I need permission to change system settings. Please grant it in Settings.")
+                    fail("I need permission to change system settings. Please grant it in Settings.")
                 } else when (intent.change) {
                     AppIntent.Change.SET -> {
                         val level = (intent.level ?: 50).coerceIn(0, 100)
@@ -437,16 +522,19 @@ class MyAccessibilityService : AccessibilityService() {
                     delay(1000)
                     processSingleCommand(last)
                 } else {
-                    sendReply("I don't have a previous command to repeat yet.")
+                    fail("I don't have a previous command to repeat yet.")
                 }
             }
 
             AppIntent.TakeScreenshot -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    statusIndicator?.hideNow() // keep the indicator out of the screenshot
+                    delay(300)
                     performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+                    delay(1000)
                     sendReply("Taking a screenshot for you.")
                 } else {
-                    sendReply("Screenshot requires Android 11 or higher.")
+                    fail("Screenshot requires Android 11 or higher.")
                 }
             }
 
@@ -466,7 +554,7 @@ class MyAccessibilityService : AccessibilityService() {
                             "Opening camera."
                     )
                 } else {
-                    sendReply("I couldn't open the camera app.")
+                    fail("I couldn't open the camera app.")
                 }
             }
 
@@ -479,7 +567,7 @@ class MyAccessibilityService : AccessibilityService() {
                     )
                     sendReply("Opening navigation to ${intent.destination}.")
                 } else {
-                    sendReply("Where would you like to navigate to?")
+                    ask("Where would you like to navigate to?")
                 }
             }
 
@@ -489,10 +577,10 @@ class MyAccessibilityService : AccessibilityService() {
                     if (openAppByName(intent.name)) {
                         sendReply("Opening ${intent.name}.")
                     } else {
-                        sendReply("I couldn't find an app named ${intent.name}.")
+                        fail("I couldn't find an app named ${intent.name}.")
                     }
                 } else {
-                    sendReply("Which app should I open?")
+                    ask("Which app should I open?")
                 }
             }
 
@@ -500,44 +588,19 @@ class MyAccessibilityService : AccessibilityService() {
             is AppIntent.ClickText -> {
                 if (performClickOnText(intent.text)) {
                     sendReply("Clicked on ${intent.text}.")
+                } else {
+                    fail("I couldn't find “${intent.text}” on screen.")
                 }
             }
 
             AppIntent.Unknown -> {
                 if (performClickOnText(rawCommand)) {
                     sendReply("Clicked on $rawCommand.")
+                } else {
+                    fail("I couldn't find “$rawCommand” on screen.")
                 }
             }
         }
-    }
-
-    private fun findNodeByContentDescription(desc: String): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
-        return searchForNode(root) {
-            it.contentDescription?.toString()?.equals(desc, true) == true
-        }
-    }
-
-    private fun findNodeByText(text: String): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
-        return searchForNode(root) {
-            it.text?.toString()?.equals(text, true) == true
-        }
-    }
-
-    private fun searchForNode(
-        node: AccessibilityNodeInfo,
-        predicate: (AccessibilityNodeInfo) -> Boolean
-    ): AccessibilityNodeInfo? {
-        if (predicate(node)) return node
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = searchForNode(child, predicate)
-            if (found != null) return found
-        }
-
-        return null
     }
 
     private fun findCurrencyTextInSubtree(node: AccessibilityNodeInfo): String? {
@@ -563,35 +626,43 @@ class MyAccessibilityService : AccessibilityService() {
         sendBroadcast(intent)
     }
 
+    /** Looks for a post UUID in the foreground app's windows (never ZeroUI's own transcript). */
     private fun findUuidOnScreen(): String? {
-        val root = rootInActiveWindow ?: return null
-        return searchForUuid(root)
-    }
-
-    private fun searchForUuid(node: AccessibilityNodeInfo): String? {
-        val text = node.text?.toString()
-            ?: node.contentDescription?.toString()
-            ?: ""
-
-        val matcher = UUID_PATTERN.matcher(text)
-
-        if (matcher.find()) return matcher.group()
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = searchForUuid(child)
-            if (found != null) return found
+        val finder = automationEngine.finder
+        for (root in finder.roots()) {
+            for (node in finder.flatten(root)) {
+                val text = node.text?.toString()
+                    ?: node.contentDescription?.toString()
+                    ?: continue
+                val matcher = UUID_PATTERN.matcher(text)
+                if (matcher.find()) return matcher.group()
+            }
         }
-
         return null
     }
 
     private fun sendReply(text: String) {
         Log.d("NLPControl", "Sending reply: $text")
+        lastReply = text
         CommandBridge.postReply(text)
     }
 
-    private fun openAppByName(name: String): Boolean {
+    /** Replies and marks the current command as failed (shown as an error on the indicator). */
+    private fun fail(text: String) {
+        sendReply(text)
+        outcome = Outcome.FAILED
+    }
+
+    /** Replies with a follow-up question; the command needs more details from the user. */
+    private fun ask(text: String) {
+        sendReply(text)
+        if (outcome != Outcome.FAILED) outcome = Outcome.NEEDS_INPUT
+    }
+
+    private fun openAppByName(name: String): Boolean = launchAppByName(name) != null
+
+    /** Launches the app best matching [name] and returns its package, or null if none could be started. */
+    private fun launchAppByName(name: String): String? {
         val pm = packageManager
         val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
         val cleanName = name.lowercase().trim()
@@ -614,11 +685,8 @@ class MyAccessibilityService : AccessibilityService() {
             }
         }
 
-        return target?.let {
-            pm.getLaunchIntentForPackage(it.packageName)?.let { intent ->
-                safeStartActivity(intent)
-            } ?: false
-        } ?: false
+        val launchIntent = target?.let { pm.getLaunchIntentForPackage(it.packageName) } ?: return null
+        return if (safeStartActivity(launchIntent)) target.packageName else null
     }
 
     private fun safeStartActivity(intent: Intent): Boolean {
@@ -705,88 +773,15 @@ class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun performClickOnText(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
-
-        // 1. Try exact/contains match as provided
-        val nodes = root.findAccessibilityNodeInfosByText(text)
-        if (!nodes.isNullOrEmpty()) {
-            for (n in nodes) {
-                if (attemptClick(n)) return true
-            }
-        }
-
-        if (deepSearchAndClick(root, text)) return true
-
-        // 2. Try matching after normalizing (removing spaces/hyphens)
-        val normalizedTarget = text
-            .replace(" ", "")
-            .replace("-", "")
-            .lowercase()
-
-        return fuzzySearchAndClick(root, normalizedTarget)
-    }
-
-    private fun fuzzySearchAndClick(
-        node: AccessibilityNodeInfo,
-        normalizedTarget: String
-    ): Boolean {
-        val nodeText = (
-                node.text?.toString()
-                    ?: node.contentDescription?.toString()
-                    ?: ""
-                )
-            .replace(" ", "")
-            .replace("-", "")
-            .lowercase()
-
-        if (nodeText.contains(normalizedTarget) && normalizedTarget.isNotEmpty()) {
-            if (attemptClick(node)) return true
-        }
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            if (fuzzySearchAndClick(child, normalizedTarget)) return true
-        }
-
-        return false
-    }
-
-    private fun deepSearchAndClick(
-        node: AccessibilityNodeInfo,
-        text: String
-    ): Boolean {
-        if (
-            node.text?.toString()?.contains(text, true) == true ||
-            node.contentDescription?.toString()?.contains(text, true) == true
-        ) {
-            if (attemptClick(node)) return true
-        }
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            if (deepSearchAndClick(child, text)) return true
-        }
-
-        return false
-    }
-
-    private fun attemptClick(node: AccessibilityNodeInfo): Boolean {
-        if (node.isClickable) {
-            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        }
-
-        var p = node.parent
-
-        while (p != null) {
-            if (p.isClickable) {
-                return p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            }
-            p = p.parent
-        }
-
-        return false
-    }
+    /**
+     * Clicks the on-screen element best matching the first of [texts] that appears (text or
+     * content description). Searches [packageName]'s windows, or any app except ZeroUI when null.
+     */
+    private suspend fun performClickOnText(
+        vararg texts: String,
+        packageName: String? = null,
+        timeoutMs: Long = 2000
+    ): Boolean = automationEngine.clickAny(texts.map { Selector(text = it) }, timeoutMs, packageName)
 
     private fun setupFloatingButton() {
         try {
@@ -887,6 +882,7 @@ class MyAccessibilityService : AccessibilityService() {
         super.onDestroy()
         serviceScope.cancel()
         CommandBridge.detachService(this)
+        statusIndicator?.destroy()
         floatingButton?.let {
             windowManager?.removeView(it)
         }
