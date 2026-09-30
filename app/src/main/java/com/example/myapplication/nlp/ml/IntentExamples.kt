@@ -57,6 +57,10 @@ object IntentExamples {
             "search for pizza on foodgorilla", "find sushi on food gorilla",
             "look for burgers on foodgorilla"
         ),
+        IntentLabel.TYPE_TEXT to listOf(
+            "search for pizza", "search for sushi on foodpanda", "look up bubble tea on uber eats",
+            "type hello in the search bar", "search noodles"
+        ),
         IntentLabel.FOOD_ORDER to listOf(
             "order item 12 from foodgorilla", "buy a pizza on food gorilla",
             "place an order on foodgorilla"

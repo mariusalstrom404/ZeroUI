@@ -28,6 +28,7 @@ class NodeFinder(private val service: AccessibilityService) {
         /** A clickable ancestor bigger than this share of the screen is a container/scrim, not the button. */
         private const val MAX_CLICK_TARGET_SCREEN_SHARE = 0.6
         private val SEARCH_FIELD_TAGS = setOf("search_bar", "menu_search_bar")
+        private val SEARCH_WORDS = listOf("search", "搜尋", "搜索", "搜寻")
     }
 
     /** Roots of the application windows to search, top-most first, excluding ZeroUI itself. */
@@ -141,10 +142,62 @@ class NodeFinder(private val service: AccessibilityService) {
         val editable = nodes.filter { it.isEditable && it.className?.contains("EditText") == true }
         return editable.firstOrNull { field ->
             val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) field.hintText else null
-            listOf(field.text, hint, field.contentDescription).any { it?.contains("Search", ignoreCase = true) == true } ||
+            listOf(field.text, hint, field.contentDescription, field.viewIdResourceName)
+                .any { it?.contains("Search", ignoreCase = true) == true } ||
                 flatten(field).any { it.text?.contains("Search", ignoreCase = true) == true }
         }
     }
+
+    /**
+     * The field to type into for [selector]: the matched node (or its editable descendant), else
+     * the field that currently has input focus. The focus fallback matters once a search bar has
+     * been tapped: its placeholder ("Search for…") disappears or the tap opens a separate search
+     * field, so the selector alone may no longer match anything editable.
+     */
+    fun findEditable(selector: Selector, packageName: String? = null): AccessibilityNodeInfo? {
+        find(selector, packageName)?.let { editableTarget(it) }?.takeIf { it.isEditable }?.let { return it }
+        return focusedEditable(packageName)
+    }
+
+    /** Visible editable fields of the top-most window that has any, search boxes first. */
+    fun textFields(packageName: String? = null): List<AccessibilityNodeInfo> {
+        for (root in roots(packageName)) {
+            val fields = flatten(root).filter { it.isEditable && it.isVisibleToUser && !boundsOf(it).isEmpty }
+            if (fields.isNotEmpty()) return fields.sortedByDescending { looksLikeSearch(it) }
+        }
+        return emptyList()
+    }
+
+    /** True when [field] or its placeholder/label says "search" (English or Chinese). */
+    fun looksLikeSearch(field: AccessibilityNodeInfo): Boolean =
+        mentionsSearch(field) || flatten(field).any { mentionsSearch(it) }
+
+    /**
+     * A tappable way into search: a search icon, button or the non-editable "fake" search bar
+     * many real apps (Foodpanda, Uber Eats…) show on their home screen, which opens a separate
+     * search screen with the real text field.
+     */
+    fun searchEntry(packageName: String? = null): AccessibilityNodeInfo? {
+        for (root in roots(packageName)) {
+            flatten(root)
+                .firstOrNull { it.isVisibleToUser && !boundsOf(it).isEmpty && !isNearlyFullScreen(it) && mentionsSearch(it) }
+                ?.let { return it }
+        }
+        return null
+    }
+
+    private fun mentionsSearch(node: AccessibilityNodeInfo): Boolean {
+        val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) node.hintText else null
+        return listOf(node.text, hint, node.contentDescription, node.viewIdResourceName).any { value ->
+            value != null && SEARCH_WORDS.any { value.contains(it, ignoreCase = true) }
+        }
+    }
+
+    /** The editable field holding input focus in [packageName]'s windows, if any. */
+    fun focusedEditable(packageName: String? = null): AccessibilityNodeInfo? =
+        roots(packageName).firstNotNullOfOrNull { root ->
+            root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
+        }
 
     /**
      * The node that should receive ACTION_CLICK for [node]: itself if clickable, else the nearest

@@ -21,6 +21,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
 import android.widget.Button
 import com.example.myapplication.automation.AutomationEngine
+import com.example.myapplication.automation.FoodDeliveryAutomation
 import com.example.myapplication.automation.FoodGorillaAutomation
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
@@ -44,6 +45,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     private val automationEngine by lazy { AutomationEngine(this) }
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
+    private val foodDeliveryAuto by lazy { FoodDeliveryAutomation(automationEngine) }
     private var dumpJob: Job? = null
 
     private var statusIndicator: StatusIndicator? = null
@@ -205,6 +207,8 @@ class MyAccessibilityService : AccessibilityService() {
         is AppIntent.CameraAction -> "Opening the camera"
         is AppIntent.Navigate -> "Starting navigation"
         is AppIntent.OpenApp -> "Opening ${intent.name}".trim()
+        is AppIntent.AppOrder -> "Ordering ${intent.item} on ${intent.app}"
+        is AppIntent.TypeText -> if (intent.submit) "Searching for “${intent.text}”" else "Typing “${intent.text}”"
         is AppIntent.ClickText -> "Looking for “${intent.text}” on screen"
         AppIntent.Unknown -> "Looking for “$rawCommand” on screen"
     }
@@ -584,6 +588,62 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
+            // Real delivery apps: "order Hawaiian Pizza from Pizza Hut on Foodpanda"
+            is AppIntent.AppOrder -> {
+                val restaurant = intent.restaurant
+                when {
+                    intent.item.isEmpty() -> ask("What would you like to order on ${intent.app}?")
+                    restaurant.isNullOrEmpty() -> ask("Which restaurant should I order ${intent.item} from on ${intent.app}?")
+                    else -> {
+                        val pkg = launchAppByName(intent.app)
+                        if (pkg == null) {
+                            fail("I couldn't find an app named ${intent.app}.")
+                        } else {
+                            sendReply("Looking for ${intent.item} from $restaurant on ${intent.app}.")
+                            when (foodDeliveryAuto.order(pkg, restaurant, intent.item)) {
+                                FoodDeliveryAutomation.Result.ADDED ->
+                                    sendReply("I added ${intent.item} from $restaurant to your ${intent.app} cart. Please review it and check out yourself.")
+                                FoodDeliveryAutomation.Result.ADDED_UNVERIFIED ->
+                                    sendReply("I tapped Add to cart for ${intent.item}. Please check your ${intent.app} cart to make sure it's there.")
+                                FoodDeliveryAutomation.Result.NEEDS_OPTIONS ->
+                                    ask("${intent.item} needs a few choices (like size or toppings). Please pick them on screen, then tap Add to cart.")
+                                FoodDeliveryAutomation.Result.SEARCH_FAILED ->
+                                    fail("I couldn't use the search bar in ${intent.app}.")
+                                FoodDeliveryAutomation.Result.RESTAURANT_NOT_FOUND ->
+                                    fail("I couldn't find $restaurant in the ${intent.app} search results.")
+                                FoodDeliveryAutomation.Result.ITEM_NOT_FOUND ->
+                                    fail("I opened $restaurant but couldn't find ${intent.item} on the menu.")
+                                FoodDeliveryAutomation.Result.ADD_FAILED ->
+                                    fail("I found ${intent.item} but couldn't find the Add to cart button.")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Any app: type into its search bar ("search for pizza on foodpanda")
+            is AppIntent.TypeText -> {
+                // "on foodpanda" names an app only if one is installed; otherwise it's part of the text.
+                val appPkg = intent.app?.takeIf { it.length >= 3 }?.let { findAppByName(it) }
+                val text = if (intent.app != null && appPkg == null) intent.fullText else intent.text
+                val foreground = automationEngine.finder.roots().firstOrNull()?.packageName?.toString()
+
+                val pkg = when {
+                    text.isEmpty() -> null
+                    appPkg == null -> foreground
+                    appPkg == foreground -> appPkg
+                    else -> launchAppByName(intent.app!!)
+                }
+                when {
+                    text.isEmpty() -> ask("What should I search for?")
+                    pkg == null && appPkg != null -> fail("I couldn't open ${intent.app}.")
+                    pkg == null -> fail("Open the app you want to search in first.")
+                    automationEngine.typeIntoApp(text, intent.submit, pkg, timeoutMs = if (pkg != foreground) 15000 else 8000) ->
+                        sendReply(if (intent.submit) "Searching for $text." else "Typed $text.")
+                    else -> fail("I couldn't find a search bar to type “$text” into.")
+                }
+            }
+
             // Fallback: best-effort click on whatever was said
             is AppIntent.ClickText -> {
                 if (performClickOnText(intent.text)) {
@@ -663,9 +723,17 @@ class MyAccessibilityService : AccessibilityService() {
 
     /** Launches the app best matching [name] and returns its package, or null if none could be started. */
     private fun launchAppByName(name: String): String? {
+        val target = findAppByName(name) ?: return null
+        val launchIntent = packageManager.getLaunchIntentForPackage(target) ?: return null
+        return if (safeStartActivity(launchIntent)) target else null
+    }
+
+    /** Package of the installed app whose label best matches [name], or null. */
+    private fun findAppByName(name: String): String? {
         val pm = packageManager
         val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
         val cleanName = name.lowercase().trim()
+        if (cleanName.isEmpty()) return null
 
         // Try searching by label
         var target = apps.find {
@@ -685,8 +753,7 @@ class MyAccessibilityService : AccessibilityService() {
             }
         }
 
-        val launchIntent = target?.let { pm.getLaunchIntentForPackage(it.packageName) } ?: return null
-        return if (safeStartActivity(launchIntent)) target.packageName else null
+        return target?.packageName?.takeIf { pm.getLaunchIntentForPackage(it) != null }
     }
 
     private fun safeStartActivity(intent: Intent): Boolean {

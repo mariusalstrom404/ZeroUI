@@ -47,6 +47,26 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
     data class ThroatsRepost(val postId: String?) : AppIntent()
     data class ThroatsComment(val postId: String?, val content: String) : AppIntent()
 
+    // --- Any app ---
+    /**
+     * Types [text] into the current app's search/text field, e.g. "search for pizza on foodpanda".
+     * [app] is the trailing "on/in <name>" if there was one; the service decides whether it is
+     * really an installed app (then [text] is typed) or part of the text (then [fullText] is).
+     * [submit] presses the keyboard's search/enter key.
+     */
+    data class TypeText(
+        val text: String,
+        val app: String? = null,
+        val submit: Boolean = true,
+        val fullText: String = text
+    ) : AppIntent()
+
+    /**
+     * "order Hawaiian Pizza from Pizza Hut on Foodpanda": find [restaurant] in a real delivery
+     * [app] and add [item] to the cart. Stops before checkout, so no confirmation is needed.
+     */
+    data class AppOrder(val item: String, val restaurant: String?, val app: String) : AppIntent()
+
     // --- Fallbacks ---
     /** No specific intent matched; [text] is the raw utterance for a best-effort click. */
     data class ClickText(val text: String) : AppIntent()

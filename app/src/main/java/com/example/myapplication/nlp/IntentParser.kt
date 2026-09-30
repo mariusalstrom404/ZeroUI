@@ -32,6 +32,12 @@ class RuleBasedParser : IntentParser {
         fun isFoodGorilla() = lower.contains("foodgorilla") || lower.contains("food gorilla")
 
         return when {
+            // "search for pizza on foodpanda", "type hello": checked first because the text being
+            // typed can contain any other keyword ("search for chicken" contains "hi").
+            !isFoodGorilla() && IntentSlots.TYPE_TEXT_VERB.containsMatchIn(lower) -> IntentLabel.TYPE_TEXT
+            // "order Hawaiian Pizza from Pizza Hut on Foodpanda" (a real delivery app)
+            !isFoodGorilla() && IntentSlots.APP_ORDER.containsMatchIn(lower) -> IntentLabel.FOOD_ORDER
+
             lower.contains("save history") || lower.contains("save logs") || lower.contains("store history") ->
                 IntentLabel.SAVE_HISTORY
             lower.contains("clear history") || lower.contains("delete history") || lower.contains("empty logs") || lower.contains("clear logs") ->
