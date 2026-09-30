@@ -15,6 +15,8 @@ import com.example.myapplication.Message
 import com.example.myapplication.UIIntent
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
+import com.example.myapplication.nlp.BookingConversation
+import com.example.myapplication.nlp.HotelQuery
 import com.example.myapplication.nlp.IntentParser
 import com.example.myapplication.nlp.ml.ParserFactory
 import org.json.JSONArray
@@ -37,6 +39,9 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The raw command awaiting a yes/no confirmation (high-risk actions only). */
     private var pendingCommand: String? = null
+
+    /** A Booking.com booking still collecting details (hotel, dates, guests, room type). */
+    private var booking: BookingConversation? = null
 
     /** True while a command has been handed to the service and we're awaiting its reply. */
     var isProcessing by mutableStateOf(false)
@@ -115,8 +120,15 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         messages.add(Message(userInput, true))
         val text = userInput.lowercase().trim()
 
+        // 0. Answering a booking question: "2 adults and 1 child" isn't a chain of commands.
+        if (currentIntent == UIIntent.HOTEL_DETAILS) {
+            continueBooking(userInput)
+            return
+        }
+
         // 1. Multi-command chains -> hand the whole utterance to the service.
-        if (text.contains(" and ") || text.contains(" then ") || text.contains(" next ")) {
+        val chained = text.contains(" and ") || text.contains(" then ") || text.contains(" next ")
+        if (chained && !HotelQuery.mentionsBooking(text)) {
             addAssistant("Sure thing, I'll get started on those tasks for you.")
             dispatchToService(userInput)
             return
@@ -170,7 +182,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                 currentIntent = UIIntent.NONE
                 return
             }
-            UIIntent.NONE, UIIntent.BRIGHTNESS -> {}
+            UIIntent.NONE, UIIntent.BRIGHTNESS, UIIntent.HOTEL_DETAILS -> {}
         }
 
         // 4. Single intent.
@@ -213,6 +225,16 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                     currentIntent = UIIntent.NAVIGATE_MODE
                 }
             }
+            is AppIntent.HotelSearch -> {
+                if (intent.book) {
+                    // Ask for whatever the booking still needs; with everything given it starts right away.
+                    val conversation = BookingConversation(intent)
+                    booking = conversation
+                    handleBooking(conversation.start())
+                } else {
+                    dispatchToService(userInput)
+                }
+            }
             is AppIntent.OpenApp -> {
                 if (intent.name.isEmpty()) {
                     addAssistant("Sure! Which app should I open?")
@@ -232,6 +254,35 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     dispatchToService(userInput)
                 }
+            }
+        }
+    }
+
+    private fun continueBooking(answer: String) {
+        val conversation = booking
+        if (conversation == null) {
+            currentIntent = UIIntent.NONE
+            return
+        }
+        handleBooking(conversation.answer(answer))
+    }
+
+    private fun handleBooking(outcome: BookingConversation.Outcome) {
+        when (outcome) {
+            is BookingConversation.Outcome.Ask -> {
+                currentIntent = UIIntent.HOTEL_DETAILS
+                addAssistant(outcome.question)
+            }
+            is BookingConversation.Outcome.Done -> {
+                currentIntent = UIIntent.NONE
+                booking = null
+                addAssistant(outcome.summary)
+                dispatchToService(outcome.command)
+            }
+            BookingConversation.Outcome.Cancelled -> {
+                currentIntent = UIIntent.NONE
+                booking = null
+                addAssistant("Okay, I've cancelled that.")
             }
         }
     }

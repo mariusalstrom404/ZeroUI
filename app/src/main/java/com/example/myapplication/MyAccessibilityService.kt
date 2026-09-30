@@ -21,13 +21,16 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
 import android.widget.Button
 import com.example.myapplication.automation.AutomationEngine
+import com.example.myapplication.automation.BookingAutomation
 import com.example.myapplication.automation.FoodDeliveryAutomation
 import com.example.myapplication.automation.FoodGorillaAutomation
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
+import com.example.myapplication.nlp.HotelQuery
 import com.example.myapplication.nlp.IntentParser
+import com.example.myapplication.nlp.StayDate
 import com.example.myapplication.nlp.ml.ParserFactory
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
@@ -46,6 +49,7 @@ class MyAccessibilityService : AccessibilityService() {
     private val automationEngine by lazy { AutomationEngine(this) }
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
     private val foodDeliveryAuto by lazy { FoodDeliveryAutomation(automationEngine) }
+    private val bookingAuto by lazy { BookingAutomation(automationEngine) }
     private var dumpJob: Job? = null
 
     private var statusIndicator: StatusIndicator? = null
@@ -111,6 +115,8 @@ class MyAccessibilityService : AccessibilityService() {
         setupFloatingButton()
         statusIndicator = StatusIndicator(this, getSystemService(WINDOW_SERVICE) as WindowManager)
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
+        automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
+        statusIndicator?.onStop = { stopCurrentCommand() }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
     }
@@ -122,12 +128,23 @@ class MyAccessibilityService : AccessibilityService() {
         currentJob = serviceScope.launch { executeCommandChain(command) }
     }
 
+    /** The indicator's stop button: cancels the running command wherever it is. */
+    private fun stopCurrentCommand() {
+        val job = currentJob?.takeIf { it.isActive } ?: return
+        Log.d("NLPControl", "Stopped by the user")
+        job.cancel()
+        statusIndicator?.show(Phase.STOPPED, "Stopped", "Nothing else will be tapped")
+        sendReply("Okay, I stopped.")
+    }
+
     private suspend fun executeCommandChain(command: String) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
         try {
-            val cleanCommand = command.replace(",", "").replace(".", "").replace("?", "")
-            val individualCommands = cleanCommand
-                .split(Regex(" then | and | next ", RegexOption.IGNORE_CASE))
+            // Keep dots inside words so "booking.com" survives; drop sentence punctuation ("Oct. 10").
+            val cleanCommand = command.replace(",", "").replace("?", "").replace(Regex("\\.(?!\\w)"), "")
+            // A Booking.com request is one command even with "and" in it ("2 adults and 1 child").
+            val individualCommands = (if (HotelQuery.mentionsBooking(cleanCommand)) listOf(cleanCommand) else cleanCommand
+                .split(Regex(" then | and | next ", RegexOption.IGNORE_CASE)))
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
 
@@ -208,6 +225,11 @@ class MyAccessibilityService : AccessibilityService() {
         is AppIntent.Navigate -> "Starting navigation"
         is AppIntent.OpenApp -> "Opening ${intent.name}".trim()
         is AppIntent.AppOrder -> "Ordering ${intent.item} on ${intent.app}"
+        is AppIntent.HotelSearch -> when {
+            intent.book && intent.hotel != null -> "Booking ${intent.hotel}"
+            intent.hotel != null -> "Looking up ${intent.hotel}"
+            else -> "Finding stays in ${intent.destination}"
+        }
         is AppIntent.TypeText -> if (intent.submit) "Searching for “${intent.text}”" else "Typing “${intent.text}”"
         is AppIntent.ClickText -> "Looking for “${intent.text}” on screen"
         AppIntent.Unknown -> "Looking for “$rawCommand” on screen"
@@ -621,6 +643,30 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
+            // Booking.com: "find a hotel in Tokyo from Oct 10 to 12 on booking.com"
+            is AppIntent.HotelSearch -> {
+                val hotel = intent.hotel
+                val guests = intent.guests
+                when {
+                    hotel == null && intent.destination.isEmpty() -> ask("Where would you like to stay?")
+                    // The chat UI normally collects these itself before sending the command.
+                    hotel == null && intent.book ->
+                        ask("Which hotel in ${intent.destination} would you like to book? Say its name, or say “any” to see the hotels there.")
+                    (intent.children ?: 0) > intent.childAges.size ->
+                        ask("How old are the children? Booking.com needs each child's age.")
+                    else -> {
+                        val pkg = launchAppByName("Booking.com") ?: launchPackage(BookingAutomation.PACKAGE)
+                        when {
+                            pkg == null -> fail("I couldn't find the Booking.com app.")
+                            hotel != null && intent.book ->
+                                reserveHotel(pkg, hotel, intent.destination, intent.checkIn, intent.checkOut, guests, intent.room)
+                            hotel != null -> searchStays(pkg, "$hotel ${intent.destination}".trim(), intent.checkIn, intent.checkOut, guests)
+                            else -> searchStays(pkg, intent.destination, intent.checkIn, intent.checkOut, guests)
+                        }
+                    }
+                }
+            }
+
             // Any app: type into its search bar ("search for pizza on foodpanda")
             is AppIntent.TypeText -> {
                 // "on foodpanda" names an app only if one is installed; otherwise it's part of the text.
@@ -633,6 +679,11 @@ class MyAccessibilityService : AccessibilityService() {
                     appPkg == null -> foreground
                     appPkg == foreground -> appPkg
                     else -> launchAppByName(intent.app!!)
+                }
+                // Booking.com has no plain search bar; "search Tokyo" there means a stay search.
+                if (pkg == BookingAutomation.PACKAGE) {
+                    searchStays(pkg, text, null, null, null)
+                    return
                 }
                 when {
                     text.isEmpty() -> ask("What should I search for?")
@@ -661,6 +712,89 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    private suspend fun searchStays(
+        pkg: String,
+        destination: String,
+        checkIn: StayDate?,
+        checkOut: StayDate?,
+        guests: HotelQuery.Guests?
+    ) {
+        val wanted = stayLabel(checkIn, checkOut)
+        val details = listOfNotNull(wanted, guests?.label()).joinToString(", ")
+        sendReply("Searching Booking.com for stays in $destination${if (details.isNotEmpty()) ", $details" else ""}.")
+        when (val result = bookingAuto.searchStays(pkg, destination, checkIn, checkOut, guests)) {
+            is BookingAutomation.Result.Found -> {
+                val found = result.properties?.let { "Found $it" } ?: "Here are the stays"
+                val where = result.searchSummary?.replace(Regex("\\s*[·•]\\s*"), ", ") ?: destination
+                val who = if (guests != null && result.guestsApplied) " for ${guests.label()}" else ""
+                val top = result.topResult?.let { " The first result is $it." } ?: ""
+                sendReply("$found in $where$who.$top${warnings(wanted, result.datesApplied, guests, result.guestsApplied)}")
+            }
+            else -> bookingFailure(result, destination)
+        }
+    }
+
+    private fun stayLabel(checkIn: StayDate?, checkOut: StayDate?): String? =
+        checkIn?.let { "${it.label()} – ${(checkOut ?: it.plusDays(1)).label()}" }
+
+    /** " I couldn't set …" for whatever was asked for but not applied in the app. */
+    private fun warnings(wanted: String?, datesApplied: Boolean, guests: HotelQuery.Guests?, guestsApplied: Boolean): String =
+        buildString {
+            if (!datesApplied && wanted != null) append(" I couldn't set $wanted, so please check the dates.")
+            if (!guestsApplied && guests != null) append(" I couldn't set ${guests.label()}, so please check the guests.")
+        }
+
+    /** Opens [hotel], selects a room and taps Reserve; the user finishes on the guest-details form. */
+    private suspend fun reserveHotel(
+        pkg: String,
+        hotel: String,
+        destination: String,
+        checkIn: StayDate?,
+        checkOut: StayDate?,
+        guests: HotelQuery.Guests?,
+        room: String?
+    ) {
+        val wanted = stayLabel(checkIn, checkOut)
+        val details = listOfNotNull(wanted, guests?.label()).joinToString(", ")
+        sendReply("Booking ${room?.let { "a $it at " } ?: ""}$hotel on Booking.com${if (details.isNotEmpty()) " ($details)" else ""}.")
+        when (val result = bookingAuto.reserve(pkg, hotel, destination, checkIn, checkOut, guests, room)) {
+            is BookingAutomation.Result.Reserved -> {
+                val what = result.room ?: "a room"
+                val dates = result.dates?.let { " for $it" } ?: ""
+                val who = if (guests != null && result.guestsApplied) " for ${guests.label()}" else ""
+                val price = result.price?.let { " ($it)" } ?: ""
+                val next = if (result.formShown) {
+                    "It isn't booked yet: fill in your details on the form and complete the booking yourself."
+                } else {
+                    "Please check the screen and complete the booking yourself."
+                }
+                sendReply(
+                    "I picked $what at ${result.hotel}$dates$who$price and tapped Reserve. $next" +
+                        warnings(wanted, result.datesApplied, guests, result.guestsApplied)
+                )
+            }
+            is BookingAutomation.Result.RoomNotOffered -> {
+                val forWhom = guests?.let { " for ${it.label()}" } ?: ""
+                val options = if (result.available.isEmpty()) "" else " The rooms available are: ${result.available.joinToString("; ")}."
+                ask(
+                    "${result.hotel} doesn't have a ${result.room}$forWhom, so I haven't reserved anything.$options " +
+                        "Pick one on the screen, or ask me again with the room you want."
+                )
+            }
+            is BookingAutomation.Result.NoRooms ->
+                fail("I opened ${result.hotel} but couldn't select a room. It may be sold out for those dates; please pick one on screen.")
+            BookingAutomation.Result.HotelNotFound -> fail("Booking.com didn't find a hotel called “$hotel”.")
+            else -> bookingFailure(result, hotel)
+        }
+    }
+
+    private fun bookingFailure(result: BookingAutomation.Result, what: String) = when (result) {
+        BookingAutomation.Result.SearchBoxNotFound -> fail("I couldn't get to the Booking.com search screen.")
+        BookingAutomation.Result.DestinationNotFound -> fail("Booking.com didn't suggest anything for “$what”.")
+        BookingAutomation.Result.HotelNotFound -> fail("Booking.com didn't find a hotel called “$what”.")
+        else -> fail("I set up the search for $what but the results didn't load.")
     }
 
     private fun findCurrencyTextInSubtree(node: AccessibilityNodeInfo): String? {
@@ -723,9 +857,12 @@ class MyAccessibilityService : AccessibilityService() {
 
     /** Launches the app best matching [name] and returns its package, or null if none could be started. */
     private fun launchAppByName(name: String): String? {
-        val target = findAppByName(name) ?: return null
-        val launchIntent = packageManager.getLaunchIntentForPackage(target) ?: return null
-        return if (safeStartActivity(launchIntent)) target else null
+        return launchPackage(findAppByName(name) ?: return null)
+    }
+
+    private fun launchPackage(pkg: String): String? {
+        val launchIntent = packageManager.getLaunchIntentForPackage(pkg) ?: return null
+        return if (safeStartActivity(launchIntent)) pkg else null
     }
 
     /** Package of the installed app whose label best matches [name], or null. */

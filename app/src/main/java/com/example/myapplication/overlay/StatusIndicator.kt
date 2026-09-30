@@ -19,12 +19,13 @@ import android.widget.ProgressBar
 import android.widget.TextView
 
 /**
- * Floating pill at the top of the screen that tells the user what ZeroUI is doing right now
+ * Floating pill at the bottom of the screen, just above the navigation bar, that tells the user what ZeroUI is doing right now
  * ("Understanding…", "Looking for “Cart”", "Done", errors).
  *
- * It is an accessibility overlay marked NOT_TOUCHABLE, so the taps and swipes ZeroUI dispatches
- * while automating pass straight through it. The text is a polite live region, so TalkBack users
- * hear status changes too. All methods may be called from any thread.
+ * While a command runs the pill shows a stop button, which calls [onStop]. Only then is the pill
+ * touchable; otherwise it is NOT_TOUCHABLE. ZeroUI's own taps and swipes pass through it either
+ * way, because the engine calls [setPassThrough] around each gesture. The text is a polite live
+ * region, so TalkBack users hear status changes too. All methods may be called from any thread.
  */
 class StatusIndicator(private val context: Context, private val windowManager: WindowManager) {
 
@@ -33,15 +34,23 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         WORKING(0xFF8AB4F8.toInt(), null),
         SUCCESS(0xFF81C995.toInt(), "✓"),
         NEEDS_INPUT(0xFFFDD663.toInt(), "?"),
-        ERROR(0xFFF28B82.toInt(), "!")
+        ERROR(0xFFF28B82.toInt(), "!"),
+        STOPPED(0xFFBDC1C6.toInt(), "■");
+
+        /** Phases where a command is still running and can be stopped. */
+        val stoppable: Boolean get() = symbol == null
     }
+
+    /** Called on the main thread when the user taps the stop button. */
+    var onStop: (() -> Unit)? = null
 
     companion object {
         private const val SUCCESS_HIDE_MS = 3000L
         private const val NEEDS_INPUT_HIDE_MS = 5000L
         private const val ERROR_HIDE_MS = 6000L
+        private const val STOPPED_HIDE_MS = 2500L
         private const val FADE_MS = 200L
-        private const val TOP_MARGIN_DP = 8
+        private const val BOTTOM_MARGIN_DP = 12
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -53,7 +62,12 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     private lateinit var badge: TextView
     private lateinit var titleView: TextView
     private lateinit var detailView: TextView
+    private lateinit var stopButton: TextView
     private var attached = false
+    /** The stop button is showing, so the pill should take touches. */
+    private var stoppable = false
+    /** ZeroUI is dispatching a gesture that must not land on the pill. */
+    private var passThrough = false
     /** Bumped on every show so a fade-out that started earlier doesn't remove a newer status. */
     private var generation = 0
 
@@ -66,13 +80,14 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT
     ).apply {
-        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        y = statusBarHeight() + dp(TOP_MARGIN_DP)
+        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        y = bottomOffset()
     }
 
     /** Shows [phase] with a [title] and optional [detail]. Final phases hide themselves after a few seconds. */
     fun show(phase: Phase, title: String, detail: String? = null): Unit = onMain {
         val view = ensureAttached() ?: return@onMain
+        updatePosition(view)
         generation++
         handler.removeCallbacks(hideRunnable)
         view.animate().cancel()
@@ -85,11 +100,15 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         (badge.background as GradientDrawable).setColor(phase.color)
         titleView.text = title
         setDetail(detail)
+        stoppable = phase.stoppable
+        stopButton.visibility = if (stoppable) View.VISIBLE else View.GONE
+        applyTouchability()
 
         val hideAfter = when (phase) {
             Phase.SUCCESS -> SUCCESS_HIDE_MS
             Phase.NEEDS_INPUT -> NEEDS_INPUT_HIDE_MS
             Phase.ERROR -> ERROR_HIDE_MS
+            Phase.STOPPED -> STOPPED_HIDE_MS
             else -> null
         }
         hideAfter?.let { handler.postDelayed(hideRunnable, it) }
@@ -98,6 +117,33 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     /** Updates only the second line (e.g. the automation step), keeping the current phase and title. */
     fun updateDetail(detail: String?): Unit = onMain {
         if (attached) setDetail(detail)
+    }
+
+    /**
+     * While [enabled], the pill ignores touches so a tap or swipe ZeroUI dispatches underneath it
+     * (e.g. a bottom "Add to cart" bar) reaches the app instead of the stop button.
+     */
+    fun setPassThrough(enabled: Boolean): Unit = onMain {
+        passThrough = enabled
+        applyTouchability()
+    }
+
+    private fun applyTouchability() {
+        val view = root ?: return
+        val touchable = stoppable && !passThrough
+        val flags = if (touchable) {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        } else {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        if (flags == params.flags) return
+        params.flags = flags
+        if (attached) {
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (e: Exception) {
+            }
+        }
     }
 
     fun hide(): Unit = onMain {
@@ -197,6 +243,23 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
 
+        stopButton = TextView(context).apply {
+            text = "■"
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x33FFFFFF)
+            }
+            contentDescription = "Stop"
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(12) }
+            setOnClickListener { onStop?.invoke() }
+        }
+
         return LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -208,36 +271,43 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             elevation = dp(6).toFloat()
             addView(iconBox)
             addView(texts)
+            addView(stopButton)
+        }
+    }
 
-            // Keep clear of the status bar / display cutout when drawn edge-to-edge.
-            setOnApplyWindowInsetsListener { v, insets ->
-                val top = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    insets.getInsets(
-                        android.view.WindowInsets.Type.systemBars() or
-                            android.view.WindowInsets.Type.displayCutout()
-                    ).top
-                } else {
-                    @Suppress("DEPRECATION")
-                    insets.systemWindowInsetTop
-                }
-                val wanted = top + dp(TOP_MARGIN_DP)
-                if (params.y != wanted && attached) {
-                    params.y = wanted
-                    windowManager.updateViewLayout(v, params)
-                }
-                insets
+    /** Re-applies the bottom offset, e.g. after rotation or a navigation-mode change. */
+    private fun updatePosition(view: View) {
+        val wanted = bottomOffset()
+        if (params.y != wanted) {
+            params.y = wanted
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (e: Exception) {
             }
         }
     }
 
+    /**
+     * Distance from the bottom edge that keeps the pill clear of the navigation bar (3-button bar
+     * or gesture handle). Read from the display's metrics rather than this window's own insets:
+     * once the pill sits above the bar its own bottom inset is 0, which would make it oscillate.
+     */
+    private fun bottomOffset(): Int = navigationBarHeight() + dp(BOTTOM_MARGIN_DP)
+
+    @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
+    private fun navigationBarHeight(): Int {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return windowManager.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                android.view.WindowInsets.Type.navigationBars() or
+                    android.view.WindowInsets.Type.displayCutout()
+            ).bottom
+        }
+        val id = context.resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        return if (id > 0) context.resources.getDimensionPixelSize(id) else dp(48)
+    }
+
     private fun dp(value: Int): Int = (value * density).toInt()
 
-    /** Initial guess until the first insets pass arrives. */
-    @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
-    private fun statusBarHeight(): Int {
-        val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
-        return if (id > 0) context.resources.getDimensionPixelSize(id) else dp(24)
-    }
 
     private inline fun onMain(crossinline block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else handler.post { block() }

@@ -39,7 +39,7 @@ import com.example.myapplication.ui.VoiceViewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
 data class Message(val text: String, val isUser: Boolean)
-enum class UIIntent { NONE, NAVIGATE_DEST, NAVIGATE_MODE, OPEN_APP, BRIGHTNESS, CONFIRM }
+enum class UIIntent { NONE, NAVIGATE_DEST, NAVIGATE_MODE, OPEN_APP, BRIGHTNESS, CONFIRM, HOTEL_DETAILS }
 
 private val ListeningRed = Color(0xFFE53935)
 

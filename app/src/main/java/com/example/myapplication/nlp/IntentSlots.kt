@@ -20,6 +20,19 @@ object IntentSlots {
     fun build(label: IntentLabel, command: String): AppIntent {
         val lower = command.lowercase()
 
+        // Anything naming Booking.com is a stay search, whatever verb it uses ("find", "book",
+        // "hotels in…"), so neither classifier has to learn it. "open booking.com" stays OpenApp.
+        if (HotelQuery.mentionsBooking(command)) {
+            val parsed = HotelQuery.parse(command)
+            val justOpen = parsed.checkIn == null && parsed.hotel == null && !parsed.book &&
+                (parsed.destination.isEmpty() || Regex("^(open|launch|start)\\b", RegexOption.IGNORE_CASE).containsMatchIn(parsed.destination))
+            return if (justOpen) AppIntent.OpenApp("Booking.com")
+            else AppIntent.HotelSearch(
+                parsed.destination, parsed.checkIn, parsed.checkOut, parsed.hotel, parsed.book, parsed.room,
+                parsed.adults, parsed.children, parsed.childAges, parsed.rooms
+            )
+        }
+
         return when (label) {
             // FoodGorilla has a search deep link; keep using it even if the ML parser picked TYPE_TEXT.
             IntentLabel.TYPE_TEXT -> if (lower.contains("foodgorilla") || lower.contains("food gorilla")) {

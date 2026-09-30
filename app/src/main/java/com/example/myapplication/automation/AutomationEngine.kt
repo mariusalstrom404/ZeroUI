@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
@@ -27,6 +28,14 @@ class AutomationEngine(private val service: AccessibilityService) {
          * Scrolling immediately used to push the target off screen while the screen was still loading.
          */
         private const val SCROLL_SETTLE_MS = 2000L
+        /** Time for the window manager to apply [onGesturePassThrough] before a gesture is injected. */
+        private const val PASS_THROUGH_SETTLE_MS = 60L
+
+        /** Promo/permission/sign-in popups that cover real apps after launch or on new screens. */
+        private val DISMISS = listOf(
+            "Not now", "Maybe later", "No thanks", "Skip", "Close", "Got it", "OK", "Dismiss",
+            "稍後", "稍後再說", "以後再說", "略過", "跳過", "關閉", "知道了", "我知道了"
+        )
     }
 
     val finder = NodeFinder(service)
@@ -39,6 +48,12 @@ class AutomationEngine(private val service: AccessibilityService) {
 
     /** Receives short, user-facing descriptions of what the engine is doing (for the status overlay). */
     var onProgress: ((String) -> Unit)? = null
+
+    /**
+     * Called with true right before a tap/swipe gesture is dispatched and false after it ends, so
+     * touchable overlays (the status indicator's stop button) can let the gesture through.
+     */
+    var onGesturePassThrough: ((Boolean) -> Unit)? = null
 
     /** "Step 4 of 12" while [execute] runs, so progress messages say where in the workflow we are. */
     private var stepLabel: String? = null
@@ -80,6 +95,8 @@ class AutomationEngine(private val service: AccessibilityService) {
                     }
                     StepType.CUSTOM -> step.action?.invoke() ?: true
                 }
+            } catch (e: CancellationException) {
+                throw e // stopped by the user or replaced by a newer command
             } catch (e: Exception) {
                 Log.e(LOG, "Automation exception in step ${step.description}", e)
                 false
@@ -218,6 +235,26 @@ class AutomationEngine(private val service: AccessibilityService) {
     fun findNode(selector: Selector, packageName: String? = targetPackage): AccessibilityNodeInfo? =
         finder.find(selector, packageName)
 
+    /** Taps [node] (via its clickable ancestor when it has a safe one). */
+    suspend fun click(node: AccessibilityNodeInfo): Boolean = performClick(node, finder.clickTarget(node))
+
+    suspend fun back() {
+        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        delay(800)
+    }
+
+    /** Closes a promo or permission popup if one is showing. Exact matches only, short wait. */
+    suspend fun dismissPopups(packageName: String?): Boolean {
+        val selectors = DISMISS.map { Selector(text = it, exact = true) } +
+            Selector(contentDescription = "Close", exact = true) +
+            Selector(contentDescription = "Dismiss", exact = true) +
+            Selector(contentDescription = "關閉", exact = true)
+        if (!clickAny(selectors, timeoutMs = 1200, packageName = packageName)) return false
+        Log.e(LOG, "[POPUP] dismissed a popup")
+        delay(800)
+        return true
+    }
+
     /**
      * Finds [selector] and clicks it. If the element (or its button) is present but disabled —
      * e.g. a checkout button that enables once the cart loads — it keeps waiting instead of
@@ -262,8 +299,11 @@ class AutomationEngine(private val service: AccessibilityService) {
         packageName: String? = targetPackage
     ): Boolean {
         val startTime = System.currentTimeMillis()
+        // Exact matches of any selector first, so a loose match on an earlier phrase
+        // ("Add to cart" ≈ some other label) can't beat an exact later one ("Add to order").
+        val passes = listOf(selectors.map { it.copy(exact = true) }, selectors.filterNot { it.exact })
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            for (selector in selectors) {
+            for (selector in passes.flatten()) {
                 val node = finder.find(selector, packageName) ?: continue
                 val target = finder.clickTarget(node)
                 if ((target ?: node).isEnabled) {
@@ -496,20 +536,23 @@ class AutomationEngine(private val service: AccessibilityService) {
      */
     suspend fun scroll(down: Boolean, packageName: String? = targetPackage): Boolean {
         val container = finder.scrollContainer(packageName)
-        if (container != null) {
-            val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-            // Lists only offer the action while they can still move that way.
-            if (container.actionList.none { it.id == action }) return false
-            if (container.performAction(action)) {
-                delay(800)
-                return true
-            }
-            return dispatchScrollGesture(down, finder.boundsOf(container))
-        }
+        if (container != null) return scroll(container, down)
 
         // No scrollable node exposed: swipe inside the app's window (never over ZeroUI's).
         val root = finder.roots(packageName).firstOrNull() ?: return false
         return dispatchScrollGesture(down, finder.boundsOf(root))
+    }
+
+    /** Scrolls [container] itself, e.g. a list nested inside a pager that [scroll] would pick instead. */
+    suspend fun scroll(container: AccessibilityNodeInfo, down: Boolean): Boolean {
+        val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        // Lists only offer the action while they can still move that way.
+        if (container.actionList.none { it.id == action }) return false
+        if (container.performAction(action)) {
+            delay(800)
+            return true
+        }
+        return dispatchScrollGesture(down, finder.boundsOf(container))
     }
 
     private suspend fun dispatchScrollGesture(down: Boolean, area: Rect): Boolean {
@@ -540,7 +583,18 @@ class AutomationEngine(private val service: AccessibilityService) {
         return dispatch(gesture)
     }
 
-    private suspend fun dispatch(gesture: GestureDescription): Boolean = suspendCoroutine { continuation ->
+    private suspend fun dispatch(gesture: GestureDescription): Boolean {
+        val passThrough = onGesturePassThrough ?: return inject(gesture)
+        passThrough(true)
+        try {
+            delay(PASS_THROUGH_SETTLE_MS)
+            return inject(gesture)
+        } finally {
+            passThrough(false)
+        }
+    }
+
+    private suspend fun inject(gesture: GestureDescription): Boolean = suspendCoroutine { continuation ->
         val accepted = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 continuation.resume(true)
