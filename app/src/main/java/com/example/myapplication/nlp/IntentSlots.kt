@@ -7,10 +7,27 @@ package com.example.myapplication.nlp
  */
 object IntentSlots {
 
+    /** Leading verb of a "type this into the current app" command; group 2 is the verb. */
+    val TYPE_TEXT_VERB = Regex("^(please\\s+)?(search\\s+for|search|look\\s+up|look\\s+for|type|enter|input)\\s+")
+
+    /** The " on " / " in " before a trailing app name ("pizza on foodpanda", up to three words). */
+    private val APP_SEPARATOR = Regex("\\s+(?:on|in)\\s+", RegexOption.IGNORE_CASE)
+
+    /** "order <item> [from <restaurant>] on|in|using|via <app>"; group 2 is the verb. */
+    val APP_ORDER = Regex("^(please\\s+)?(order|buy|get\\s+me)\\s+.+\\s+(?:on|in|using|via)\\s+\\S+")
+    private val APP_ORDER_SEPARATOR = Regex("\\s+(?:on|in|using|via)\\s+", RegexOption.IGNORE_CASE)
+
     fun build(label: IntentLabel, command: String): AppIntent {
         val lower = command.lowercase()
 
         return when (label) {
+            // FoodGorilla has a search deep link; keep using it even if the ML parser picked TYPE_TEXT.
+            IntentLabel.TYPE_TEXT -> if (lower.contains("foodgorilla") || lower.contains("food gorilla")) {
+                build(IntentLabel.FOOD_SEARCH, command)
+            } else {
+                typeText(command)
+            }
+
             IntentLabel.BATTERY -> AppIntent.Battery
 
             IntentLabel.FLASHLIGHT ->
@@ -133,7 +150,11 @@ object IntentSlots {
             IntentLabel.TOP_UP ->
                 AppIntent.TopUp
 
-            IntentLabel.FOOD_SEARCH -> {
+            // The ML parser can map "search for pizza on foodpanda" here; only FoodGorilla
+            // itself has the deep link, any other app gets typed into.
+            IntentLabel.FOOD_SEARCH -> if (!lower.contains("foodgorilla") && !lower.contains("food gorilla")) {
+                typeText(command)
+            } else {
                 val query =
                     EntityExtractors
                         .targetAfter(
@@ -161,7 +182,11 @@ object IntentSlots {
                 )
             }
 
-            IntentLabel.FOOD_ORDER -> {
+            IntentLabel.FOOD_ORDER -> if (
+                !lower.contains("foodgorilla") && !lower.contains("food gorilla") && APP_ORDER.containsMatchIn(lower)
+            ) {
+                appOrder(command)
+            } else {
                 val itemId =
                     EntityExtractors.number(command)
 
@@ -330,6 +355,43 @@ object IntentSlots {
 
             IntentLabel.UNKNOWN ->
                 AppIntent.Unknown
+        }
+    }
+
+    /** "search for pizza on foodpanda" → TypeText("pizza", app = "foodpanda", submit = true). */
+    private fun typeText(command: String): AppIntent.TypeText {
+        val trimmed = command.trim()
+        // The ML parser may send phrasings the rule regex doesn't cover ("find sushi on ...").
+        val verb = TYPE_TEXT_VERB.find(trimmed.lowercase())
+            ?: Regex("^(please\\s+)?(find|look\\s+for)\\s+").find(trimmed.lowercase())
+        val rest = if (verb != null) trimmed.substring(verb.range.last + 1).trim() else trimmed
+        val submit = verb == null || !verb.groupValues[2].let { it == "type" || it == "enter" || it == "input" }
+
+        // Last "on/in" wins: "rice in soup on foodpanda" → app "foodpanda".
+        val separator = APP_SEPARATOR.findAll(rest).lastOrNull()
+        val app = separator?.let { rest.substring(it.range.last + 1).trim() }
+        return if (separator != null && separator.range.first > 0 && app!!.split(Regex("\\s+")).size <= 3) {
+            AppIntent.TypeText(rest.substring(0, separator.range.first).trim(), app, submit, rest)
+        } else {
+            AppIntent.TypeText(rest, null, submit)
+        }
+    }
+
+    /** "order Hawaiian Pizza from Pizza Hut on Foodpanda" → AppOrder("Hawaiian Pizza", "Pizza Hut", "Foodpanda"). */
+    private fun appOrder(command: String): AppIntent.AppOrder {
+        val trimmed = command.trim()
+        val verb = APP_ORDER.find(trimmed.lowercase())!!
+        val afterVerb = trimmed.substring(verb.groups[2]!!.range.last + 1).trim()
+        // Last "on/in" separates the app, so "from Pizza Hut in Taipei on Foodpanda" keeps "in Taipei".
+        val separator = APP_ORDER_SEPARATOR.findAll(afterVerb).last()
+        val app = afterVerb.substring(separator.range.last + 1).trim()
+        val body = afterVerb.substring(0, separator.range.first).trim()
+
+        val from = body.lowercase().lastIndexOf(" from ")
+        return if (from > 0) {
+            AppIntent.AppOrder(body.substring(0, from).trim(), body.substring(from + 6).trim(), app)
+        } else {
+            AppIntent.AppOrder(body, null, app)
         }
     }
 

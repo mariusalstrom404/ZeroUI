@@ -182,6 +182,8 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                         " Navigation: 'navigate to Central Park' or 'take me to the airport'.\n" +
                         " Banking (NCCUbank): 'check my balance', 'transfer 50 to Bob', or 'show my transaction history'.\n" +
                         " Food (FoodGorilla): 'search for pizza on FoodGorilla' or 'open my cart'.\n" +
+                        " Any app: 'search for pizza on Foodpanda' or 'type hello'.\n" +
+                        " Delivery apps: 'order Hawaiian Pizza from Pizza Hut on Foodpanda' (adds it to your cart).\n" +
                         " Social (Throats): 'post Hello World to Throats'.\n" +
                         " History: 'save history' or 'clear history'.\n" +
                         " Repeat: 'repeat' or 'one more time'.\n\n" +

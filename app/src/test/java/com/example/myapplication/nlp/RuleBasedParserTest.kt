@@ -85,6 +85,68 @@ class RuleBasedParserTest {
     }
 
     @Test
+    fun typeText_searchWithApp() {
+        val intent = parser.parse("search for pizza on foodpanda") as AppIntent.TypeText
+        assertEquals("pizza", intent.text)
+        assertEquals("foodpanda", intent.app)
+        assertEquals("pizza on foodpanda", intent.fullText)
+        assertTrue(intent.submit)
+    }
+
+    @Test
+    fun typeText_withoutApp() {
+        val intent = parser.parse("search chicken rice") as AppIntent.TypeText
+        assertEquals("chicken rice", intent.text)
+        assertNull(intent.app)
+    }
+
+    @Test
+    fun typeText_typeDoesNotSubmit() {
+        val intent = parser.parse("type hello world") as AppIntent.TypeText
+        assertEquals("hello world", intent.text)
+        assertTrue(!intent.submit)
+    }
+
+    @Test
+    fun typeText_foodGorillaKeepsDeepLink() {
+        assertTrue(parser.parse("search for pizza on foodgorilla") is AppIntent.FoodSearch)
+    }
+
+    @Test
+    fun appOrder_itemRestaurantAndApp() {
+        val intent = parser.parse("Order Hawaiian Pizza from Pizza Hut on Foodpanda") as AppIntent.AppOrder
+        assertEquals("Hawaiian Pizza", intent.item)
+        assertEquals("Pizza Hut", intent.restaurant)
+        assertEquals("Foodpanda", intent.app)
+        assertTrue(!intent.requiresConfirmation)
+    }
+
+    @Test
+    fun appOrder_lastSeparatorIsTheApp() {
+        val intent = parser.parse("order fried rice from Din Tai Fung in Taipei 101 on foodpanda") as AppIntent.AppOrder
+        assertEquals("fried rice", intent.item)
+        assertEquals("Din Tai Fung in Taipei 101", intent.restaurant)
+        assertEquals("foodpanda", intent.app)
+    }
+
+    @Test
+    fun appOrder_withoutRestaurant() {
+        val intent = parser.parse("order bubble tea on foodpanda") as AppIntent.AppOrder
+        assertEquals("bubble tea", intent.item)
+        assertNull(intent.restaurant)
+    }
+
+    @Test
+    fun foodGorillaOrder_isUnchanged() {
+        assertTrue(parser.parse("order a burger from MidOnald's on foodgorilla") is AppIntent.FoodOrder)
+    }
+
+    @Test
+    fun searchAlone_isStillAClick() {
+        assertTrue(parser.parse("search") is AppIntent.ClickText)
+    }
+
+    @Test
     fun unmatched_fallsBackToClickText() {
         val intent = parser.parse("frobnicate the widget")
         assertTrue(intent is AppIntent.ClickText)

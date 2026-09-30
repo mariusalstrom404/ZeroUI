@@ -32,6 +32,7 @@ enum class IntentLabel {
     THROATS_POST,
     THROATS_REPOST,
     THROATS_COMMENT,
+    TYPE_TEXT,
     CLICK_TEXT,
     UNKNOWN
 }
