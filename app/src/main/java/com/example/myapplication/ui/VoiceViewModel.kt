@@ -106,14 +106,14 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         CommandBridge.clearClient()
     }
 
-    /** Reply received from the accessibility service. */
-    fun onServiceReply(text: String) = addAssistant(text)
+    /** Reply received from the accessibility service, which has already read it aloud itself. */
+    fun onServiceReply(text: String) = addAssistant(text, spoken = true)
 
-    private fun addAssistant(text: String) {
+    private fun addAssistant(text: String, spoken: Boolean = false) {
         val last = messages.lastOrNull()
         if (last != null && !last.isUser && last.text == text) return
         messages.add(Message(text, false))
-        speak(text)
+        if (!spoken) speak(text)
     }
 
     fun onUserCommand(userInput: String) {

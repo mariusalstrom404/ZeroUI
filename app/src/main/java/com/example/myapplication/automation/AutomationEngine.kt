@@ -117,7 +117,11 @@ class AutomationEngine(private val service: AccessibilityService) {
         report("Opening app")
         val intent = service.packageManager.getLaunchIntentForPackage(packageName)
         return if (intent != null) {
-            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            // CLEAR_TASK drops whatever screen the app was left on so it starts from its home page
+            intent.addFlags(
+                android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                        android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+            )
             service.startActivity(intent)
             targetPackage = packageName
             true

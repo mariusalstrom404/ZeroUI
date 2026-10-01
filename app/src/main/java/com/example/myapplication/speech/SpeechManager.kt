@@ -6,23 +6,21 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
 
 /**
- * Wraps [TextToSpeech] and [SpeechRecognizer] so the UI doesn't have to manage their
- * lifecycles or listener boilerplate (previously inline in MainActivity).
+ * Wraps [SpeechRecognizer] so the UI doesn't have to manage its lifecycle or listener
+ * boilerplate (previously inline in MainActivity). Speaking is done by [Speaker].
  *
  * Recognition results and errors are delivered via [resultListener]/[errorListener];
  * [isListening] is exposed as a [StateFlow] for the UI to reflect mic state. Unlike the
  * previous implementation, recognition errors are surfaced rather than silently dropped.
  */
-class SpeechManager(context: Context) : TextToSpeech.OnInitListener {
+class SpeechManager(context: Context) {
 
     private val appContext = context.applicationContext
-    private var tts: TextToSpeech? = TextToSpeech(appContext, this)
     private val recognizer: SpeechRecognizer? =
         if (SpeechRecognizer.isRecognitionAvailable(appContext))
             SpeechRecognizer.createSpeechRecognizer(appContext) else null
@@ -64,17 +62,6 @@ class SpeechManager(context: Context) : TextToSpeech.OnInitListener {
 
     val isRecognitionAvailable: Boolean get() = recognizer != null
 
-    override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) {
-            tts?.language = Locale.US
-            tts?.setPitch(1.05f)
-        }
-    }
-
-    fun speak(text: String) {
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-    }
-
     fun startListening() {
         val r = recognizer
         if (r == null) {
@@ -86,8 +73,6 @@ class SpeechManager(context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun destroy() {
-        tts?.shutdown()
-        tts = null
         recognizer?.destroy()
     }
 }
