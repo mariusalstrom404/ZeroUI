@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.myapplication.speech.Speaker
 import com.example.myapplication.speech.SpeechManager
 import com.example.myapplication.ui.VoiceViewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
@@ -57,7 +58,8 @@ class MainActivity : ComponentActivity() {
         speech.errorListener = {
             Toast.makeText(this, "Sorry, I didn't catch that. Please try again.", Toast.LENGTH_SHORT).show()
         }
-        viewModel.speak = { speech.speak(it) }
+        Speaker.init(this)
+        viewModel.speak = { Speaker.speak(it) }
 
         setContent {
             MyApplicationTheme {

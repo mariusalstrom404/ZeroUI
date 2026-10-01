@@ -34,6 +34,7 @@ import com.example.myapplication.nlp.StayDate
 import com.example.myapplication.nlp.ml.ParserFactory
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
+import com.example.myapplication.speech.Speaker
 import kotlinx.coroutines.*
 import java.util.regex.Pattern
 
@@ -112,6 +113,7 @@ class MyAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         CommandBridge.attachService(this)
+        Speaker.init(this)
         setupFloatingButton()
         statusIndicator = StatusIndicator(this, getSystemService(WINDOW_SERVICE) as WindowManager)
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
@@ -133,6 +135,7 @@ class MyAccessibilityService : AccessibilityService() {
         val job = currentJob?.takeIf { it.isActive } ?: return
         Log.d("NLPControl", "Stopped by the user")
         job.cancel()
+        Speaker.stop()
         statusIndicator?.show(Phase.STOPPED, "Stopped", "Nothing else will be tapped")
         sendReply("Okay, I stopped.")
     }
@@ -167,7 +170,11 @@ class MyAccessibilityService : AccessibilityService() {
             when {
                 failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
                 question != null -> statusIndicator?.show(Phase.NEEDS_INPUT, "Need more information", question)
-                else -> statusIndicator?.show(Phase.SUCCESS, "Done", lastReply)
+                else -> {
+                    statusIndicator?.show(Phase.SUCCESS, "Done", lastReply)
+                    // Success replies are spoken by sendReply; say something when there wasn't one.
+                    if (lastReply == null) Speaker.speak("Done.", interrupt = false)
+                }
             }
         } finally {
             CommandBridge.postStatus(CommandBridge.Status.FINISHED)
@@ -838,6 +845,8 @@ class MyAccessibilityService : AccessibilityService() {
     private fun sendReply(text: String) {
         Log.d("NLPControl", "Sending reply: $text")
         lastReply = text
+        // Spoken here rather than by the UI so errors and questions are heard while another app is in front.
+        Speaker.speak(text, interrupt = false)
         CommandBridge.postReply(text)
     }
 
@@ -862,6 +871,8 @@ class MyAccessibilityService : AccessibilityService() {
 
     private fun launchPackage(pkg: String): String? {
         val launchIntent = packageManager.getLaunchIntentForPackage(pkg) ?: return null
+        // CLEAR_TASK drops whatever screen the app was left on so it starts from its home page
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
         return if (safeStartActivity(launchIntent)) pkg else null
     }
 
