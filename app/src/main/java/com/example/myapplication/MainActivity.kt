@@ -1,6 +1,7 @@
 package com.example.myapplication
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
@@ -9,7 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
+import androidx.lifecycle.ViewModelProvider
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.myapplication.speech.Speaker
 import com.example.myapplication.speech.SpeechManager
+import com.example.myapplication.ui.ProcessViewModels
 import com.example.myapplication.ui.VoiceViewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
@@ -45,12 +47,31 @@ private val ListeningRed = Color(0xFFE53935)
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: VoiceViewModel by viewModels()
+    companion object {
+        /** Intent extra: start listening as soon as the dialog is shown. */
+        const val EXTRA_START_VOICE = "start_voice"
+    }
+
+    // Process-wide, so the chat and a pending follow-up survive this dialog closing and reopening.
+    private val viewModel: VoiceViewModel by lazy {
+        ViewModelProvider(
+            ProcessViewModels,
+            ViewModelProvider.AndroidViewModelFactory.getInstance(application)
+        )[VoiceViewModel::class.java]
+    }
     private lateinit var speech: SpeechManager
+
+    /** Bumped for each request to start listening, including ones arriving at an open dialog. */
+    private var voiceRequests by mutableIntStateOf(0)
+
+    // The automation taps the app underneath, so this dialog must not stay on top of it.
+    private val getOutOfTheWay: () -> Unit = { moveTaskToBack(true) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // A stray tap beside the dialog mustn't close it, above all while an automation waits for an answer.
+        setFinishOnTouchOutside(false)
 
         speech = SpeechManager(this)
         speech.resultListener = { viewModel.onUserCommand(it) }
@@ -59,8 +80,8 @@ class MainActivity : ComponentActivity() {
         }
         Speaker.init(this)
         viewModel.speak = { Speaker.speak(it) }
-        // The automation taps the app underneath, so this dialog must not stay on top of it.
-        viewModel.onAnswered = { moveTaskToBack(true) }
+        viewModel.onAnswered = getOutOfTheWay
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_START_VOICE, false)) voiceRequests++
 
         setContent {
             MyApplicationTheme {
@@ -70,7 +91,7 @@ class MainActivity : ComponentActivity() {
                         messages = viewModel.messages,
                         isListening = speech.isListening.collectAsState().value,
                         isProcessing = viewModel.isProcessing,
-                        autoStartVoice = intent.getBooleanExtra("start_voice", false),
+                        voiceRequests = voiceRequests,
                         onStartListening = { speech.startListening() },
                         onSend = { viewModel.onUserCommand(it) }
                     )
@@ -79,9 +100,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The dialog was already open (e.g. an automation asks a question): listen again without recreating it. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_START_VOICE, false)) voiceRequests++
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         speech.destroy()
+        // The ViewModel outlives this Activity; a newer instance may already have set its own.
+        if (viewModel.onAnswered === getOutOfTheWay) viewModel.onAnswered = {}
     }
 }
 
@@ -91,7 +121,7 @@ fun ConversationalNLPUI(
     messages: List<Message>,
     isListening: Boolean,
     isProcessing: Boolean,
-    autoStartVoice: Boolean,
+    voiceRequests: Int,
     onStartListening: () -> Unit,
     onSend: (String) -> Unit
 ) {
@@ -116,8 +146,8 @@ fun ConversationalNLPUI(
         if (lastVisible >= messages.size - 2) listState.animateScrollToItem(messages.size - 1)
     }
 
-    LaunchedEffect(autoStartVoice) {
-        if (autoStartVoice) requestListen()
+    LaunchedEffect(voiceRequests) {
+        if (voiceRequests > 0) requestListen()
     }
 
     Column(

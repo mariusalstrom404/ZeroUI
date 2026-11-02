@@ -84,10 +84,15 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         y = bottomOffset()
     }
 
-    /** Shows [phase] with a [title] and optional [detail]. Final phases hide themselves after a few seconds. */
-    fun show(phase: Phase, title: String, detail: String? = null): Unit = onMain {
+    /**
+     * Shows [phase] with a [title] and optional [detail]. Final phases hide themselves after a few seconds.
+     * With [atTop] the pill sits at the top of the screen instead, e.g. while ZeroUI's dialog is open
+     * for an answer: at the bottom it would cover the dialog's text field and mic button.
+     */
+    fun show(phase: Phase, title: String, detail: String? = null, atTop: Boolean = false): Unit = onMain {
         val view = ensureAttached() ?: return@onMain
-        updatePosition(view)
+        params.gravity = (if (atTop) Gravity.TOP else Gravity.BOTTOM) or Gravity.CENTER_HORIZONTAL
+        updatePosition(view, force = true)
         generation++
         handler.removeCallbacks(hideRunnable)
         view.animate().cancel()
@@ -275,10 +280,10 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         }
     }
 
-    /** Re-applies the bottom offset, e.g. after rotation or a navigation-mode change. */
-    private fun updatePosition(view: View) {
-        val wanted = bottomOffset()
-        if (params.y != wanted) {
+    /** Re-applies the edge offset, e.g. after rotation, a navigation-mode change or a move to the other edge. */
+    private fun updatePosition(view: View, force: Boolean = false) {
+        val wanted = if (params.gravity and Gravity.VERTICAL_GRAVITY_MASK == Gravity.TOP) topOffset() else bottomOffset()
+        if (force || params.y != wanted) {
             params.y = wanted
             try {
                 windowManager.updateViewLayout(view, params)
@@ -293,6 +298,20 @@ class StatusIndicator(private val context: Context, private val windowManager: W
      * once the pill sits above the bar its own bottom inset is 0, which would make it oscillate.
      */
     private fun bottomOffset(): Int = navigationBarHeight() + dp(BOTTOM_MARGIN_DP)
+
+    /** Distance from the top edge that keeps the pill clear of the status bar and camera cutout. */
+    @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
+    private fun topOffset(): Int {
+        val bar = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowManager.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                android.view.WindowInsets.Type.statusBars() or android.view.WindowInsets.Type.displayCutout()
+            ).top
+        } else {
+            val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id > 0) context.resources.getDimensionPixelSize(id) else dp(24)
+        }
+        return bar + dp(BOTTOM_MARGIN_DP)
+    }
 
     @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
     private fun navigationBarHeight(): Int {
