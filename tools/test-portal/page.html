@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZeroUI test portal</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 16px; }
+  label { display: block; margin-top: 12px; font-weight: 600; }
+  input, select, textarea, button { font: inherit; width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; }
+  button { margin-top: 16px; cursor: pointer; }
+  pre { padding: 12px; border: 1px solid #888; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<h1>ZeroUI test portal</h1>
+<label>Type
+  <select id="endpoint">
+    <option value="command">New command</option>
+    <option value="answer">Follow-up answer</option>
+  </select>
+</label>
+<label>Today <input id="today" type="date"></label>
+<div id="commandFields">
+  <label>Command <textarea id="utterance" rows="2">transfer 50 to Bob and check my balance</textarea></label>
+</div>
+<div id="answerFields" hidden>
+  <label>Detail being collected <input id="slot" value="AMOUNT"></label>
+  <label>Question <input id="question" value="How much should I transfer?"></label>
+  <label>Answer <input id="answer" value="fifty dollars"></label>
+</div>
+<button id="send">Send</button>
+<h2>Response</h2>
+<pre id="output">Nothing sent yet.</pre>
+<script>
+  const el = (id) => document.getElementById(id);
+  el("today").value = new Date().toLocaleDateString("en-CA");
+  el("endpoint").addEventListener("change", () => {
+    const isCommand = el("endpoint").value === "command";
+    el("commandFields").hidden = !isCommand;
+    el("answerFields").hidden = isCommand;
+  });
+  el("send").addEventListener("click", async () => {
+    const body = {
+      endpoint: el("endpoint").value,
+      today: el("today").value,
+      utterance: el("utterance").value,
+      slot: el("slot").value,
+      question: el("question").value,
+      answer: el("answer").value,
+    };
+    el("output").textContent = "Waiting...";
+    const started = Date.now();
+    try {
+      const response = await fetch("/api", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const reply = await response.json();
+      el("output").textContent = "Status " + reply.status + " in " + (Date.now() - started) + " ms\n\n" + JSON.stringify(reply.result ?? reply.error, null, 2);
+    } catch (error) {
+      el("output").textContent = "Request failed: " + error.message;
+    }
+  });
+</script>
+</body>
+</html>

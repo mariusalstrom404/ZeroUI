@@ -29,9 +29,7 @@ import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.HotelQuery
-import com.example.myapplication.nlp.IntentParser
 import com.example.myapplication.nlp.StayDate
-import com.example.myapplication.nlp.ml.ParserFactory
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
 import com.example.myapplication.speech.Speaker
@@ -44,8 +42,6 @@ class MyAccessibilityService : AccessibilityService() {
     private var floatingButton: View? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var currentJob: Job? = null
-    private val parser: IntentParser by lazy { ParserFactory.create(this) }
-    private var lastRawCommand: String? = null
 
     private val automationEngine by lazy { AutomationEngine(this) }
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
@@ -123,46 +119,49 @@ class MyAccessibilityService : AccessibilityService() {
         Log.d("NLPControl", "Service connected and ready")
     }
 
-    /** Entry point invoked by [CommandBridge] when the UI submits a command. */
-    fun submitCommand(command: String) {
-        Log.d("NLPControl", "Service starting chain: $command")
+    /** Entry point invoked by [CommandBridge] with commands the UI has understood and confirmed. */
+    fun submitCommands(commands: List<AppIntent>) {
+        Log.d("NLPControl", "Service starting chain of ${commands.size}")
         currentJob?.cancel()
-        currentJob = serviceScope.launch { executeCommandChain(command) }
+        currentJob = serviceScope.launch { executeCommandChain(commands) }
+    }
+
+    fun showUnderstanding(utterance: String) {
+        statusIndicator?.show(Phase.UNDERSTANDING, "Understanding your request…", "“$utterance”")
+    }
+
+    /** Takes down the "understanding" state when nothing is left to run for that utterance. */
+    fun clearUnderstanding() {
+        if (currentJob?.isActive != true) statusIndicator?.hide()
     }
 
     /** The indicator's stop button: cancels the running command wherever it is. */
     private fun stopCurrentCommand() {
-        val job = currentJob?.takeIf { it.isActive } ?: return
+        val stoppedRequest = CommandBridge.postStop()
+        val job = currentJob?.takeIf { it.isActive }
+        if (job == null && !stoppedRequest) return
         Log.d("NLPControl", "Stopped by the user")
-        job.cancel()
+        job?.cancel()
         Speaker.stop()
         statusIndicator?.show(Phase.STOPPED, "Stopped", "Nothing else will be tapped")
         sendReply("Okay, I stopped.")
     }
 
-    private suspend fun executeCommandChain(command: String) {
+    private suspend fun executeCommandChain(commands: List<AppIntent>) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
         try {
-            // Keep dots inside words so "booking.com" survives; drop sentence punctuation ("Oct. 10").
-            val cleanCommand = command.replace(",", "").replace("?", "").replace(Regex("\\.(?!\\w)"), "")
-            // A Booking.com request is one command even with "and" in it ("2 adults and 1 child").
-            val individualCommands = (if (HotelQuery.mentionsBooking(cleanCommand)) listOf(cleanCommand) else cleanCommand
-                .split(Regex(" then | and | next ", RegexOption.IGNORE_CASE)))
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-
             var failure: String? = null
             var question: String? = null
-            for ((index, cmd) in individualCommands.withIndex()) {
-                val progress = if (individualCommands.size > 1) "Command ${index + 1} of ${individualCommands.size}" else null
-                processSingleCommand(cmd, progress)
+            for ((index, intent) in commands.withIndex()) {
+                val progress = if (commands.size > 1) "Command ${index + 1} of ${commands.size}" else null
+                processSingleCommand(intent, progress)
                 when (outcome) {
                     Outcome.FAILED -> if (failure == null) failure = lastReply
                     Outcome.NEEDS_INPUT -> question = lastReply
                     Outcome.OK -> {}
                 }
-                if (index < individualCommands.lastIndex) {
-                    statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${individualCommands[index + 1]}")
+                if (index < commands.lastIndex) {
+                    statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${describe(commands[index + 1])}")
                     delay(4000)
                 }
             }
@@ -181,32 +180,23 @@ class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun processSingleCommand(command: String, progress: String? = null) {
-        Log.d("NLPControl", "Processing: $command")
+    private suspend fun processSingleCommand(intent: AppIntent, progress: String? = null) {
+        Log.d("NLPControl", "Processing: $intent")
         outcome = Outcome.OK
         lastReply = null
-        statusIndicator?.show(
-            Phase.UNDERSTANDING,
-            "Understanding your request…",
-            listOfNotNull(progress, "“$command”").joinToString(" · ")
-        )
-        val intent = parser.parse(command)
-        if (intent !is AppIntent.RepeatLast) {
-            lastRawCommand = command
-        }
-        statusIndicator?.show(Phase.WORKING, describe(intent, command), progress)
+        statusIndicator?.show(Phase.WORKING, describe(intent), progress)
         try {
-            dispatch(intent, command)
+            dispatch(intent)
         } catch (e: CancellationException) {
             throw e // replaced by a newer command; that one owns the indicator now
         } catch (e: Exception) {
-            Log.e("NLPControl", "Command failed: $command", e)
+            Log.e("NLPControl", "Command failed: $intent", e)
             fail("Sorry, something went wrong while doing that.")
         }
     }
 
     /** What the indicator says while [intent] runs. */
-    private fun describe(intent: AppIntent, rawCommand: String): String = when (intent) {
+    private fun describe(intent: AppIntent): String = when (intent) {
         AppIntent.CheckBalance -> "Checking your balance"
         is AppIntent.Transfer -> "Transferring money"
         AppIntent.TransactionHistory -> "Opening transaction history"
@@ -239,11 +229,11 @@ class MyAccessibilityService : AccessibilityService() {
         }
         is AppIntent.TypeText -> if (intent.submit) "Searching for “${intent.text}”" else "Typing “${intent.text}”"
         is AppIntent.ClickText -> "Looking for “${intent.text}” on screen"
-        AppIntent.Unknown -> "Looking for “$rawCommand” on screen"
+        AppIntent.Unknown -> "Working on it"
     }
 
     /** Executes a parsed [AppIntent] using the accessibility/system capabilities. */
-    private suspend fun dispatch(intent: AppIntent, rawCommand: String) {
+    private suspend fun dispatch(intent: AppIntent) {
         when (intent) {
             // NCCUbank: Check Balance
             AppIntent.CheckBalance -> {
@@ -548,15 +538,9 @@ class MyAccessibilityService : AccessibilityService() {
                 sendReply("I've cleared the conversation history.")
             }
 
+            // CommandConversation expands a repeat before anything reaches the service.
             AppIntent.RepeatLast -> {
-                val last = lastRawCommand
-                if (last != null) {
-                    sendReply("Repeating your last command: $last")
-                    delay(1000)
-                    processSingleCommand(last)
-                } else {
-                    fail("I don't have a previous command to repeat yet.")
-                }
+                fail("I don't have a previous command to repeat yet.")
             }
 
             AppIntent.TakeScreenshot -> {
@@ -711,12 +695,9 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
+            // CommandConversation answers these itself; never tap on a guess.
             AppIntent.Unknown -> {
-                if (performClickOnText(rawCommand)) {
-                    sendReply("Clicked on $rawCommand.")
-                } else {
-                    fail("I couldn't find “$rawCommand” on screen.")
-                }
+                fail("Sorry, I didn't understand that.")
             }
         }
     }

@@ -1,12 +1,11 @@
 package com.example.myapplication.nlp
 
 /**
- * Structured representation of a single user command, produced by an [IntentParser].
+ * Structured representation of a single user command, produced from the LLM's output by [LlmJson].
  *
  * This is the single source of truth shared by the conversational UI
  * (which decides how to respond / prompt) and the accessibility service
- * (which executes the action). Slot filling (amounts, recipients, app names,
- * UUIDs) is done by [EntityExtractors] and carried on these intents.
+ * (which executes the action).
  *
  * [requiresConfirmation] marks high-risk actions (money movement, checkout) that
  * the UI must verbally confirm before dispatching for execution.

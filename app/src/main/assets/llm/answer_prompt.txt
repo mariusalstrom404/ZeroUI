@@ -1,0 +1,10 @@
+The ZeroUI voice assistant asked the user a question and could not understand the reply with its own rules.
+Today is {today}. The detail being collected is {slot}.
+
+Use status "cancel" if the user wants to drop the request, and "unclear" if the reply does not answer the question. Never guess.
+- CONFIRMATION: "confirm" only if the user clearly agrees to the action in the question; otherwise "cancel" or "unclear".
+- HOTEL or ROOM: "no_preference" if the user has no preference. Otherwise "filled" with value set.
+- Any other detail: "filled", with the answer alone in value, in its original language and without filler words.
+  AMOUNT and CHILD_AGES use digits: put an amount in value, and ages in child_ages.
+- DATES and GUESTS: "filled", using check_in and check_out (YYYY-MM-DD), adults, children, child_ages and rooms.
+When filled, also set any other field the reply mentions; everything else is null. Other statuses have no other fields.

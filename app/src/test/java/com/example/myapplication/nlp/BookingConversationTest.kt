@@ -9,10 +9,12 @@ import org.junit.Test
 class BookingConversationTest {
 
     private val today = StayDate(2026, 10, 1)
-    private val parser = RuleBasedParser()
 
     private fun start(command: String): Pair<BookingConversation, Outcome> {
-        val intent = parser.parse(command) as AppIntent.HotelSearch
+        val p = HotelQuery.parse(command, today)
+        val intent = AppIntent.HotelSearch(
+            p.destination, p.checkIn, p.checkOut, p.hotel, p.book, p.room, p.adults, p.children, p.childAges, p.rooms
+        )
         val conversation = BookingConversation(intent, today)
         return conversation to conversation.start()
     }
@@ -61,26 +63,13 @@ class BookingConversationTest {
         assertEquals(listOf(0, 4), HotelQuery.parseAges("a baby and a 4 year old"))
     }
 
-    @Test
-    fun commandCarriesGuests() {
-        val guests = HotelQuery.Guests(2, listOf(5, 8), rooms = 2)
-        val command = HotelQuery.command("Tokyo", "Hilton", StayDate(2026, 12, 5), StayDate(2026, 12, 8), book = true, room = "twin room", guests = guests)
-        assertTrue(command, !command.contains(" and "))
-        val p = HotelQuery.parse(command, today)
-        assertEquals("Hilton", p.hotel)
-        assertEquals("twin room", p.room)
-        assertEquals(2, p.adults)
-        assertEquals(listOf(5, 8), p.childAges)
-        assertEquals(2, p.rooms)
-    }
-
     // --- conversation ---
 
     @Test
     fun everythingGivenStartsRightAway() {
         val (_, outcome) = start("book a twin room at the Hilton in Tokyo from Dec 5 to Dec 8 for 2 adults on booking.com")
         assertTrue(outcome is Outcome.Done)
-        val p = HotelQuery.parse((outcome as Outcome.Done).command, today)
+        val p = (outcome as Outcome.Done).intent
         assertEquals("Hilton", p.hotel)
         assertEquals("twin room", p.room)
         assertEquals(2, p.adults)
@@ -95,8 +84,7 @@ class BookingConversationTest {
         assertEquals(Slot.GUESTS, c.answer("Dec 5 to Dec 8").slot())
         assertEquals(Slot.CHILD_AGES, c.answer("2 adults and 1 child").slot())
         assertEquals(Slot.ROOM, c.answer("6").slot())
-        val done = c.answer("double") as Outcome.Done
-        val p = HotelQuery.parse(done.command, today)
+        val p = (c.answer("double") as Outcome.Done).intent
         assertTrue(p.book)
         assertEquals("RIHGA Royal Hotel", p.hotel)
         assertEquals("Osaka", p.destination)
@@ -118,8 +106,7 @@ class BookingConversationTest {
     fun anyHotelBecomesASearchWithoutRoomQuestion() {
         val (c, _) = start("book a hotel in Kyoto from Dec 5 to Dec 8 on booking.com")
         assertEquals(Slot.GUESTS, c.answer("any").slot())
-        val done = c.answer("just me") as Outcome.Done
-        val p = HotelQuery.parse(done.command, today)
+        val p = (c.answer("just me") as Outcome.Done).intent
         assertTrue(!p.book)
         assertEquals("Kyoto", p.destination)
         assertEquals(1, p.adults)
@@ -153,6 +140,33 @@ class BookingConversationTest {
         c.answer("Dec 5 to Dec 8")
         c.answer("2 adults")
         val done = c.answer("any") as Outcome.Done
-        assertEquals("Aloft Osaka Dojima", HotelQuery.parse(done.command, today).hotel)
+        assertEquals("Aloft Osaka Dojima", done.intent.hotel)
+    }
+
+    @Test
+    fun rambleIsLeftForTheLlmNotTakenAsAName() {
+        val (c, _) = start("book a hotel in Osaka on booking.com")
+        val again = c.answer("well I was thinking maybe somewhere close to the station") as Outcome.Ask
+        assertEquals(Slot.HOTEL, again.slot)
+        assertTrue(again.retry)
+    }
+
+    @Test
+    fun llmReadingFillsWhatRulesCouldNot() {
+        val (c, _) = start("book the Hilton in Tokyo on booking.com")
+        c.answer("sometime soon")
+        val reading = LlmAnswer(
+            LlmAnswer.Status.FILLED, checkIn = StayDate(2026, 12, 5), checkOut = StayDate(2026, 12, 7), adults = 2
+        )
+        assertEquals(Slot.ROOM, c.apply(reading).slot())
+    }
+
+    @Test
+    fun llmUnclearAsksAgain() {
+        val (c, _) = start("book the Hilton in Tokyo on booking.com")
+        c.answer("sometime soon")
+        val again = c.apply(LlmAnswer(LlmAnswer.Status.UNCLEAR)) as Outcome.Ask
+        assertEquals(Slot.DATES, again.slot)
+        assertTrue(again.retry)
     }
 }

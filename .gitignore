@@ -13,3 +13,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Holds the OpenAI key, and this repository is public. See docs/llm-setup-and-testing.md.
+/app/src/main/java/com/example/myapplication/nlp/LlmSecrets.kt

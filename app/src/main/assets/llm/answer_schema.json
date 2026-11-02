@@ -1,0 +1,105 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "answer"
+  ],
+  "properties": {
+    "answer": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "confirm",
+                "cancel",
+                "no_preference",
+                "unclear"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "value",
+            "check_in",
+            "check_out",
+            "adults",
+            "children",
+            "child_ages",
+            "rooms",
+            "room"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "filled"
+              ]
+            },
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "check_in": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "check_out": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "adults": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "children": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "child_ages": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "integer"
+              }
+            },
+            "rooms": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "room": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

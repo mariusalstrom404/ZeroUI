@@ -29,10 +29,8 @@ class HotelQueryTest {
             "search for hotels in Paris using Booking",
             "search for hotels in Paris on booking dot com"
         )) {
-            assertTrue(command, HotelQuery.mentionsBooking(command))
             assertEquals(command, "Paris", parse(command).destination)
         }
-        assertFalse(HotelQuery.mentionsBooking("stop booking the meeting room"))
     }
 
     @Test
@@ -147,30 +145,6 @@ class HotelQueryTest {
         val p = parse("find a hotel in Tokyo on booking.com")
         assertFalse(p.book)
         assertNull(p.hotel)
-    }
-
-    @Test
-    fun commandRoundTrips() {
-        val booked = parse(HotelQuery.command("Tokyo", "Hilton", StayDate(2026, 12, 5), StayDate(2026, 12, 8), book = true, room = "twin room"))
-        assertEquals(HotelQuery.Parsed("Tokyo", StayDate(2026, 12, 5), StayDate(2026, 12, 8), "Hilton", true, "twin room"), booked)
-
-        val search = parse(HotelQuery.command("Tokyo", null, null, null, book = false))
-        assertEquals(HotelQuery.Parsed("Tokyo", null, null, null, false, null), search)
-
-        val nextYear = parse(HotelQuery.command("London", "The Savoy", StayDate(2027, 3, 3), StayDate(2027, 3, 5), book = true))
-        assertEquals("Savoy", nextYear.hotel)
-        assertEquals(StayDate(2027, 3, 3), nextYear.checkIn)
-    }
-
-    @Test
-    fun parserRoutesBookingToHotelSearch() {
-        val parser = RuleBasedParser()
-        assertTrue(parser.parse("search for hotels in Tokyo on booking.com") is AppIntent.HotelSearch)
-        assertTrue(parser.parse("find me a place to stay in Rome on booking.com") is AppIntent.HotelSearch)
-        assertEquals(AppIntent.OpenApp("Booking.com"), parser.parse("open booking.com"))
-        val book = parser.parse("book the Hilton in Tokyo on booking.com") as AppIntent.HotelSearch
-        assertTrue(book.book)
-        assertEquals("Hilton", book.hotel)
     }
 
     @Test
