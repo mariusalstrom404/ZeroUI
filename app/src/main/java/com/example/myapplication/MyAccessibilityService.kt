@@ -784,16 +784,13 @@ class MyAccessibilityService : AccessibilityService() {
      * answers, which is the way out if speech recognition fails.
      */
     private suspend fun askByVoice(question: String): String? {
-        statusIndicator?.show(Phase.WORKING, "Waiting for your answer", question)
+        // At the top, so the pill doesn't cover the dialog's text field and mic.
+        statusIndicator?.show(Phase.WORKING, "Waiting for your answer", question, atTop = true)
         CommandBridge.postReply(question)
         Speaker.speakAndWait(question)
         val answer = CommandBridge.expectAnswer()
         try {
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    .putExtra("start_voice", true)
-            )
+            startActivity(voiceDialogIntent())
             return withTimeoutOrNull(ANSWER_TIMEOUT_MS) { answer.await() }
                 ?.also { statusIndicator?.show(Phase.WORKING, "Continuing", it) }
         } finally {
@@ -1070,6 +1067,14 @@ class MyAccessibilityService : AccessibilityService() {
         timeoutMs: Long = 2000
     ): Boolean = automationEngine.clickAny(texts.map { Selector(text = it) }, timeoutMs, packageName)
 
+    /**
+     * Brings up the voice dialog and starts listening. SINGLE_TOP hands an open dialog the intent
+     * (MainActivity.onNewIntent) rather than CLEAR_TOP destroying and recreating it.
+     */
+    private fun voiceDialogIntent() = Intent(this, MainActivity::class.java)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra(MainActivity.EXTRA_START_VOICE, true)
+
     private fun setupFloatingButton() {
         try {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -1118,18 +1123,7 @@ class MyAccessibilityService : AccessibilityService() {
                                     Math.abs(e.rawX - itx) < 10 &&
                                     Math.abs(e.rawY - ity) < 10
                                 ) {
-                                    startActivity(
-                                        Intent(
-                                            this@MyAccessibilityService,
-                                            MainActivity::class.java
-                                        ).apply {
-                                            addFlags(
-                                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                                        Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                            )
-                                            putExtra("start_voice", true)
-                                        }
-                                    )
+                                    startActivity(voiceDialogIntent())
                                 }
                                 return true
                             }

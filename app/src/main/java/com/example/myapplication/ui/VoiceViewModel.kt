@@ -11,6 +11,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import com.example.myapplication.Message
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
@@ -24,6 +26,16 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+
+/**
+ * Owns the one [VoiceViewModel] for the whole process instead of each MainActivity. The dialog is
+ * closed and reopened while automations run (to get out of the app's way, then to ask a question),
+ * and an Activity-scoped ViewModel would lose the chat, a pending follow-up question and the
+ * service's replies each time.
+ */
+object ProcessViewModels : ViewModelStoreOwner {
+    override val viewModelStore = ViewModelStore()
+}
 
 /**
  * Holds the chat messages and connects the UI to [CommandConversation], which understands each
@@ -45,7 +57,10 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     /** Set by the host Activity to route assistant text to text-to-speech. */
     var speak: (String) -> Unit = {}
 
-    /** Set by the host Activity to get out of the way once a running automation has its answer. */
+    /**
+     * Set by the host Activity to get out of the way once a running automation has its answer.
+     * The Activity resets it when destroyed, since this ViewModel outlives it.
+     */
     var onAnswered: () -> Unit = {}
 
     init {
