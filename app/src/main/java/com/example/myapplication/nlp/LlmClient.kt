@@ -1,6 +1,8 @@
 package com.example.myapplication.nlp
 
 import android.content.res.AssetManager
+import com.example.myapplication.automation.ScreenAction
+import com.example.myapplication.automation.ScreenLlm
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -10,8 +12,15 @@ import java.net.URL
 /** OpenAI couldn't give a usable result: offline, timed out, not configured or invalid output. */
 class LlmUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-/** One command from the LLM. [questions] holds its wording for details the user left out. */
-data class LlmCommand(val intent: AppIntent, val questions: Map<FollowUpSlot, String> = emptyMap())
+/**
+ * One command from the LLM. [questions] holds its wording for details the user left out;
+ * [bookingQuestions] does the same for a hotel booking, which [BookingConversation] collects.
+ */
+data class LlmCommand(
+    val intent: AppIntent,
+    val questions: Map<FollowUpSlot, String> = emptyMap(),
+    val bookingQuestions: Map<BookingConversation.Slot, String> = emptyMap()
+)
 
 /** A follow-up answer the local rules couldn't understand, as read by the LLM. */
 data class LlmAnswer(
@@ -41,7 +50,14 @@ interface LlmClient {
  * Calls OpenAI directly with the key in [LlmSecrets]. The prompts and schemas are in `assets/llm`,
  * where the test portal in `tools/test-portal` reads the same copies.
  */
-class OpenAiLlmClient(private val assets: AssetManager) : LlmClient {
+class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
+
+    override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenAction {
+        val instructions = asset("agent_prompt.txt").replace("{today}", LlmJson.isoDate(StayDate.today()))
+        val steps = if (history.isEmpty()) "Nothing yet." else history.joinToString("\n")
+        val input = "Goal: $goal\n\nSo far:\n$steps\n\nCurrent screen:\n$screen"
+        return LlmJson.screenAction(post("screen_action", "agent_schema.json", instructions, input))
+    }
 
     override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
         val instructions = asset("command_prompt.txt").replace("{today}", LlmJson.isoDate(today))

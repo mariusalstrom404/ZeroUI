@@ -1,0 +1,48 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "node",
+    "text",
+    "submit",
+    "say"
+  ],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "tap",
+        "type",
+        "scroll_down",
+        "scroll_up",
+        "back",
+        "wait",
+        "ask_user",
+        "done",
+        "give_up"
+      ]
+    },
+    "node": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "submit": {
+      "type": "boolean"
+    },
+    "say": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

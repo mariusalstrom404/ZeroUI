@@ -1,5 +1,6 @@
 package com.example.myapplication.nlp
 
+import com.example.myapplication.automation.ScreenAction
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -84,14 +85,23 @@ object LlmJson {
     }
 
     private fun command(o: JSONObject, today: StayDate): LlmCommand {
+        val intent = intent(o, today)
+        val booking = intent is AppIntent.HotelSearch && intent.book
         val questions = mutableMapOf<FollowUpSlot, String>()
+        val bookingQuestions = mutableMapOf<BookingConversation.Slot, String>()
         val missing = o.optJSONArray("missing") ?: JSONArray()
         for (i in 0 until missing.length()) {
             val entry = missing.getJSONObject(i)
-            val slot = FollowUpSlot.entries.firstOrNull { it.name == entry.optString("slot") } ?: continue
-            entry.text("question")?.let { questions[slot] = it }
+            val name = entry.optString("slot")
+            val question = entry.text("question") ?: continue
+            // A booking's details are collected by BookingConversation, so its wording goes there.
+            if (booking) {
+                BookingConversation.Slot.entries.firstOrNull { it.name == name }?.let { bookingQuestions[it] = question }
+            } else {
+                FollowUpSlot.entries.firstOrNull { it.name == name }?.let { questions[it] = question }
+            }
         }
-        return LlmCommand(intent(o, today), questions)
+        return LlmCommand(intent, questions, bookingQuestions)
     }
 
     private fun intent(o: JSONObject, today: StayDate): AppIntent = when (o.getString("intent")) {
@@ -123,7 +133,26 @@ object LlmJson {
         "APP_ORDER" -> AppIntent.AppOrder(o.text("item").orEmpty(), o.text("restaurant"), o.text("app").orEmpty())
         "HOTEL" -> hotel(o, today)
         "CLICK_TEXT" -> o.text("text")?.let { AppIntent.ClickText(it) } ?: AppIntent.Unknown
+        "APP_TASK" -> o.text("goal")?.let { AppIntent.AppTask(it, o.text("app")) } ?: AppIntent.Unknown
         else -> AppIntent.Unknown
+    }
+
+    /** One action of the screen agent. Whether its element exists is checked by [ScreenAgent]. */
+    @Throws(LlmUnavailableException::class)
+    fun screenAction(json: String): ScreenAction = readJson(json) { o ->
+        val node = o.count("node", 0..Int.MAX_VALUE)
+        when (o.getString("action")) {
+            "tap" -> ScreenAction.Tap(node)
+            "type" -> ScreenAction.Type(node, o.text("text"), o.bool("submit") ?: false)
+            "scroll_down" -> ScreenAction.ScrollDown
+            "scroll_up" -> ScreenAction.ScrollUp
+            "back" -> ScreenAction.Back
+            "wait" -> ScreenAction.Wait
+            "ask_user" -> ScreenAction.Ask(o.text("say"))
+            "done" -> ScreenAction.Done(o.text("say"))
+            "give_up" -> ScreenAction.GiveUp(o.text("say"))
+            else -> throw LlmUnavailableException("Unknown screen action")
+        }
     }
 
     /** The service reads a FoodGorilla order as "item from restaurant". */

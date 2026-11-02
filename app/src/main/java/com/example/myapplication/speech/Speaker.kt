@@ -1,8 +1,12 @@
 package com.example.myapplication.speech
 
 import android.content.Context
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 
 /**
@@ -15,6 +19,7 @@ import java.util.Locale
 object Speaker : TextToSpeech.OnInitListener {
 
     private const val TAG = "Speaker"
+    private const val MAX_SPEECH_WAIT_MS = 30000L
 
     private var tts: TextToSpeech? = null
     private var ready = false
@@ -61,6 +66,23 @@ object Speaker : TextToSpeech.OnInitListener {
         }
         val mode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
         tts?.speak(text, mode, null, text.hashCode().toString())
+    }
+
+    /** Queues [text] and returns once it has been said, so the mic doesn't pick up our own voice. */
+    suspend fun speakAndWait(text: String) {
+        val engine = tts
+        if (!ready || engine == null) return
+        val id = "wait-${SystemClock.uptimeMillis()}"
+        val finished = CompletableDeferred<Unit>()
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) { if (utteranceId == id) finished.complete(Unit) }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) { if (utteranceId == id) finished.complete(Unit) }
+            override fun onStop(utteranceId: String?, interrupted: Boolean) { if (utteranceId == id) finished.complete(Unit) }
+        })
+        engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+        withTimeoutOrNull(MAX_SPEECH_WAIT_MS) { finished.await() }
     }
 
     fun stop() {

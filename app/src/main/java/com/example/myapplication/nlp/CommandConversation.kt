@@ -61,7 +61,7 @@ class CommandConversation(
                 }
                 intent === AppIntent.Unknown -> says += "Sorry, I didn't understand that."
                 intent is AppIntent.HotelSearch && intent.book -> {
-                    val conversation = BookingConversation(intent, today())
+                    val conversation = BookingConversation(intent, today(), command.bookingQuestions)
                     if (!applyBooking(conversation, conversation.start(), says)) return Turn(says)
                 }
                 intent.missingSlots().isNotEmpty() -> {

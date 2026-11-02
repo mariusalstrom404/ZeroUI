@@ -183,6 +183,41 @@ class CommandConversationTest {
     }
 
     @Test
+    fun bookingAsksWithTheLlmsWording() {
+        llm.commands = listOf(
+            LlmCommand(
+                AppIntent.HotelSearch("", book = true),
+                bookingQuestions = mapOf(
+                    BookingConversation.Slot.DESTINATION to "Which city are you heading to?",
+                    BookingConversation.Slot.DATES to "Which nights do you need?"
+                )
+            )
+        )
+        assertEquals("Which city are you heading to?", say("book a hotel").says.single())
+        // HOTEL wasn't worded by the LLM, so the built-in question is used.
+        assertTrue(say("Tokyo").says.single().startsWith("Which hotel in Tokyo"))
+        assertEquals("Which nights do you need?", say("any").says.single())
+    }
+
+    @Test
+    fun bookingStillAsksWhenTheLlmListsNothing() {
+        commands(AppIntent.HotelSearch("", book = true))
+        assertEquals("Where would you like to stay?", say("book a hotel").says.single())
+    }
+
+    @Test
+    fun aRetriedBookingQuestionUsesTheBuiltInExamples() {
+        llm.commands = listOf(
+            LlmCommand(
+                AppIntent.HotelSearch("Tokyo", hotel = "Hilton", book = true),
+                bookingQuestions = mapOf(BookingConversation.Slot.DATES to "Which nights?")
+            )
+        )
+        assertEquals("Which nights?", say("book the Hilton in Tokyo").says.single())
+        assertTrue(say("purple").says.single().startsWith("Sorry, I didn't catch that. When are you staying?"))
+    }
+
+    @Test
     fun bookingFallsBackToLlm() {
         commands(AppIntent.HotelSearch("Tokyo", hotel = "Hilton", book = true))
         say("book the Hilton in Tokyo")

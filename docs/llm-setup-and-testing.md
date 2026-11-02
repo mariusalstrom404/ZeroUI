@@ -62,7 +62,8 @@ Each response lists only the fields of the intent the model chose. A field of th
 | `order fish and chips from Joe's on Foodpanda` | One `APP_ORDER`, `item: "fish and chips"` |
 | `幫我打開手電筒` | `FLASHLIGHT`, `enable: true` |
 | `search for 牛肉麵 on Foodpanda` | `TYPE_TEXT`, `text: "牛肉麵"`, `app: "Foodpanda"` |
-| `book the Hilton in Tokyo tomorrow for 3 nights for 2 adults and 1 child` | One `HOTEL`, `book: true`, dates worked out from **Today**, `adults: 2`, `children: 1` |
+| `book the Hilton in Tokyo tomorrow for 3 nights for 2 adults and 1 child` | One `HOTEL`, `book: true`, dates worked out from **Today**, `adults: 2`, `children: 1`, and `CHILD_AGES` and `ROOM` in `missing`, each with a question |
+| `book a hotel` | `HOTEL`, `book: true`, with `DESTINATION`, `HOTEL`, `DATES` and `GUESTS` in `missing`, each with a question |
 | `tap Settings` | `CLICK_TEXT`, `text: "Settings"` |
 | `purple monkey dishwasher` | `UNKNOWN`, and not a guessed risky intent |
 
@@ -92,9 +93,17 @@ Model output can vary, so run the safety rows several times. A wrong `confirm` o
 
 The page shows OpenAI's own error message with each status. Requests use `store: false`, so don't expect their content in OpenAI's stored logs. Use the dashboard's usage page to see that requests arrive and what they cost.
 
+### What the screen agent sends
+
+For tasks with no script, and when a Foodpanda-style order gets stuck, the app sends OpenAI the goal, the steps so far and the text of the screen, read from the accessibility tree. It never sends screenshots, and it leaves out what's typed in password fields. Any other text on screen, including names, messages and balances, is sent.
+
+The rules for payment and private details are in `ActionGuard.kt`, not in the prompt. The agent can't tap payment buttons or type into private fields, and it asks before taps such as Send, Delete or Reserve. These rules go by button wording, so an unusual label can get past them. Watch what it does when you test a new app.
+
 ### What the portal doesn't cover
 
-The portal tests only the prompts and the model. These run inside the app, so test them on a phone afterwards:
+The portal tests only the prompts and the model, and it doesn't send the screen agent's requests. These run inside the app, so test them on a phone afterwards:
+
+- The screen agent, including voice questions and returning to the app after an answer
 
 - Local rules for follow-up answers, and the fallback to the LLM
 - Asking for missing details, and confirmation before transfers and checkout

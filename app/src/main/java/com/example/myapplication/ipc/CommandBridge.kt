@@ -2,6 +2,7 @@ package com.example.myapplication.ipc
 
 import com.example.myapplication.MyAccessibilityService
 import com.example.myapplication.nlp.AppIntent
+import kotlinx.coroutines.CompletableDeferred
 
 /**
  * In-process channel between the conversational UI and the accessibility service.
@@ -25,6 +26,7 @@ object CommandBridge {
     private var replyListener: ((String) -> Unit)? = null
     private var statusListener: ((Status) -> Unit)? = null
     private var stopListener: (() -> Boolean)? = null
+    private var answer: CompletableDeferred<String>? = null
 
     val isServiceConnected: Boolean get() = service != null
 
@@ -41,7 +43,21 @@ object CommandBridge {
     /** The user pressed stop. Returns true if the client had a request in progress to cancel. */
     fun postStop(): Boolean = stopListener?.invoke() ?: false
 
+    /** Starts waiting for the user's next utterance, which then answers the service, not the chat. */
+    fun expectAnswer(): CompletableDeferred<String> =
+        CompletableDeferred<String>().also { answer = it }
+
+    fun clearAnswer(waiting: CompletableDeferred<String>) { if (answer === waiting) answer = null }
+
     // --- Client side ---
+
+    /** Gives [text] to a running automation that asked for it. Returns false if none is waiting. */
+    fun deliverAnswer(text: String): Boolean {
+        val waiting = answer ?: return false
+        answer = null
+        waiting.complete(text)
+        return true
+    }
 
     fun setClient(onReply: (String) -> Unit, onStatus: (Status) -> Unit, onStop: () -> Boolean) {
         replyListener = onReply

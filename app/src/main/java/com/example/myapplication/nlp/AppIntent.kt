@@ -91,6 +91,12 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
                 ?.let { HotelQuery.Guests(it, childAges.take(children ?: 0), rooms ?: 1) }
     }
 
+    /**
+     * Anything else that can be done by operating an app: the screen agent works towards [goal] in
+     * [app], or in the app already in front when null. It stops before paying or private details.
+     */
+    data class AppTask(val goal: String, val app: String? = null) : AppIntent()
+
     // --- Fallbacks ---
     /** No specific intent matched; [text] is the raw utterance for a best-effort click. */
     data class ClickText(val text: String) : AppIntent()
