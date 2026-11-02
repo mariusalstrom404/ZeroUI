@@ -1,6 +1,7 @@
 package com.example.myapplication.ipc
 
 import com.example.myapplication.MyAccessibilityService
+import com.example.myapplication.nlp.AppIntent
 
 /**
  * In-process channel between the conversational UI and the accessibility service.
@@ -23,6 +24,7 @@ object CommandBridge {
     private var service: MyAccessibilityService? = null
     private var replyListener: ((String) -> Unit)? = null
     private var statusListener: ((Status) -> Unit)? = null
+    private var stopListener: (() -> Boolean)? = null
 
     val isServiceConnected: Boolean get() = service != null
 
@@ -36,22 +38,32 @@ object CommandBridge {
 
     fun postStatus(status: Status) { statusListener?.invoke(status) }
 
+    /** The user pressed stop. Returns true if the client had a request in progress to cancel. */
+    fun postStop(): Boolean = stopListener?.invoke() ?: false
+
     // --- Client side ---
 
-    fun setClient(onReply: (String) -> Unit, onStatus: (Status) -> Unit) {
+    fun setClient(onReply: (String) -> Unit, onStatus: (Status) -> Unit, onStop: () -> Boolean) {
         replyListener = onReply
         statusListener = onStatus
+        stopListener = onStop
     }
 
     fun clearClient() {
         replyListener = null
         statusListener = null
+        stopListener = null
     }
 
-    /** Sends a command to the service. Returns false if the service isn't connected. */
-    fun submit(command: String): Boolean {
+    /** Sends parsed commands to the service, in order. Returns false if the service isn't connected. */
+    fun submit(commands: List<AppIntent>): Boolean {
         val s = service ?: return false
-        s.submitCommand(command)
+        s.submitCommands(commands)
         return true
     }
+
+    /** Shows that an utterance is being understood; no-op if the service isn't connected. */
+    fun showUnderstanding(utterance: String) { service?.showUnderstanding(utterance) }
+
+    fun clearUnderstanding() { service?.clearUnderstanding() }
 }

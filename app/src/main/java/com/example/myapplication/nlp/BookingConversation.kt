@@ -6,16 +6,18 @@ package com.example.myapplication.nlp
  * guests → children's ages → room type. An answer may fill several details at once
  * ("Dec 5 to 8 for 2 adults"), and a request that already has everything finishes immediately.
  *
- * The result is a command in words [HotelQuery.parse] reads back, sent to the service as usual.
+ * Answers are read with [HotelQuery] first. One it can't read comes back as an [Outcome.Ask] with
+ * `retry` set, and the caller may pass the LLM's reading of it to [apply].
  */
 class BookingConversation(start: AppIntent.HotelSearch, private val today: StayDate = StayDate.today()) {
 
     enum class Slot { DESTINATION, HOTEL, DATES, GUESTS, CHILD_AGES, ROOM }
 
     sealed class Outcome {
-        data class Ask(val slot: Slot, val question: String) : Outcome()
-        /** Everything is known: say [summary], then send [command] to the service. */
-        data class Done(val command: String, val summary: String) : Outcome()
+        /** [retry] means the last answer wasn't understood and [slot] is being asked again. */
+        data class Ask(val slot: Slot, val question: String, val retry: Boolean = false) : Outcome()
+        /** Everything is known: say [summary], then send [intent] to the service. */
+        data class Done(val intent: AppIntent.HotelSearch, val summary: String) : Outcome()
         data object Cancelled : Outcome()
     }
 
@@ -58,17 +60,18 @@ class BookingConversation(start: AppIntent.HotelSearch, private val today: StayD
         val noPreference = NO_PREFERENCE.containsMatchIn(answer)
 
         when (slot) {
-            Slot.DESTINATION -> {
+            Slot.DESTINATION -> if (!noPreference) {
                 val parsed = HotelQuery.parse("find hotels in $answer", today)
-                destination = parsed.destination.ifEmpty { answer }
+                val place = parsed.destination.ifEmpty { answer }
+                if (!FollowUpRules.isLong(place)) destination = place
                 absorb(parsed)
             }
             Slot.HOTEL -> if (noPreference) {
                 anyHotel = true
             } else {
                 val parsed = HotelQuery.parse("book ${answer.replace(ANSWER_LEAD_IN, "")}", today)
-                hotel = parsed.hotel ?: parsed.destination.ifEmpty { null }
-                if (parsed.hotel != null && parsed.destination.isNotEmpty()) destination = parsed.destination
+                hotel = (parsed.hotel ?: parsed.destination.ifEmpty { null })?.takeUnless { FollowUpRules.isLong(it) }
+                if (hotel != null && parsed.hotel != null && parsed.destination.isNotEmpty()) destination = parsed.destination
                 absorb(parsed)
             }
             Slot.DATES -> absorb(HotelQuery.parse(answer, today))
@@ -80,7 +83,39 @@ class BookingConversation(start: AppIntent.HotelSearch, private val today: StayD
                 val ages = HotelQuery.parseAges(answer)
                 if (ages.size >= (children ?: 0)) childAges = ages.take(children ?: 0)
             }
-            Slot.ROOM -> if (noPreference) anyRoom = true else room = roomType(answer)
+            Slot.ROOM -> if (noPreference) anyRoom = true else room = roomType(answer).takeUnless { FollowUpRules.isLong(it) }
+        }
+        return next(retry = missing() == slot)
+    }
+
+    /** Applies the LLM's reading of an answer that [answer] couldn't understand. */
+    fun apply(reading: LlmAnswer): Outcome {
+        val slot = missing() ?: return next(retry = false)
+        when (reading.status) {
+            LlmAnswer.Status.CANCEL -> return Outcome.Cancelled
+            LlmAnswer.Status.NO_PREFERENCE -> when (slot) {
+                Slot.HOTEL -> anyHotel = true
+                Slot.ROOM -> anyRoom = true
+                else -> {}
+            }
+            LlmAnswer.Status.FILLED -> {
+                when (slot) {
+                    Slot.DESTINATION -> reading.value?.let { destination = it }
+                    Slot.HOTEL -> reading.value?.let { hotel = it }
+                    Slot.ROOM -> reading.value?.let { room = roomType(it) }
+                    Slot.CHILD_AGES -> if (reading.childAges.size >= (children ?: 0)) {
+                        childAges = reading.childAges.take(children ?: 0)
+                    }
+                    Slot.DATES, Slot.GUESTS -> {}
+                }
+                absorb(
+                    HotelQuery.Parsed(
+                        "", reading.checkIn, reading.checkOut, room = reading.room, adults = reading.adults,
+                        children = reading.children, childAges = reading.childAges, rooms = reading.rooms
+                    )
+                )
+            }
+            LlmAnswer.Status.CONFIRM, LlmAnswer.Status.UNCLEAR -> {}
         }
         return next(retry = missing() == slot)
     }
@@ -118,7 +153,7 @@ class BookingConversation(start: AppIntent.HotelSearch, private val today: StayD
     private fun next(retry: Boolean): Outcome {
         val slot = missing() ?: return done()
         val sorry = if (retry) "Sorry, I didn't catch that. " else ""
-        return Outcome.Ask(slot, sorry + question(slot))
+        return Outcome.Ask(slot, sorry + question(slot), retry)
     }
 
     private fun question(slot: Slot): String = when (slot) {
@@ -139,13 +174,16 @@ class BookingConversation(start: AppIntent.HotelSearch, private val today: StayD
         val start = checkIn
         val dates = start?.let { "${it.label()} – ${(checkOut ?: it.plusDays(1)).label()}" }
         val booking = hotel != null
-        val command = HotelQuery.command(destination, hotel, checkIn, checkOut, book = booking, room = room, guests = guests)
+        val intent = AppIntent.HotelSearch(
+            destination, start, start?.let { checkOut ?: it.plusDays(1) }, hotel, booking, room.takeIf { booking },
+            guests.adults, guests.childAges.size, guests.childAges, guests.rooms
+        )
         val details = listOfNotNull(dates, guests.label(), room?.takeIf { booking }).joinToString(", ")
         val summary = if (booking) {
             "Okay, booking $hotel: $details. I'll stop before payment so you can check everything."
         } else {
             "Okay, I'll show you the hotels in $destination: $details."
         }
-        return Outcome.Done(command, summary)
+        return Outcome.Done(intent, summary)
     }
 }

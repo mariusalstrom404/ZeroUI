@@ -1,0 +1,800 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "commands"
+  ],
+  "properties": {
+    "commands": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "BATTERY",
+                  "GREETING",
+                  "SAVE_HISTORY",
+                  "CLEAR_HISTORY",
+                  "REPEAT_LAST",
+                  "TAKE_SCREENSHOT",
+                  "CHECK_BALANCE",
+                  "BANK_HISTORY",
+                  "TOP_UP",
+                  "FOOD_CART",
+                  "FOOD_CHECKOUT",
+                  "UNKNOWN"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "enable"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "FLASHLIGHT"
+                ]
+              },
+              "enable": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "change",
+              "level"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "VOLUME",
+                  "BRIGHTNESS"
+                ]
+              },
+              "change": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "UP",
+                  "DOWN",
+                  "SET",
+                  null
+                ]
+              },
+              "level": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "take_photo"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "CAMERA_ACTION"
+                ]
+              },
+              "take_photo": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "destination",
+              "mode",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "NAVIGATE"
+                ]
+              },
+              "destination": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "mode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "bus",
+                  "walking",
+                  "driving",
+                  null
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "DESTINATION",
+                        "MODE"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "app",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "OPEN_APP"
+                ]
+              },
+              "app": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "APP"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "amount",
+              "recipient",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "TRANSFER"
+                ]
+              },
+              "amount": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "recipient": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "AMOUNT",
+                        "RECIPIENT"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "query",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "FOOD_SEARCH"
+                ]
+              },
+              "query": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "QUERY"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "item",
+              "restaurant",
+              "item_id",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "FOOD_ORDER"
+                ]
+              },
+              "item": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "restaurant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "item_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "ITEM"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "restaurant",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "FOOD_MENU"
+                ]
+              },
+              "restaurant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "RESTAURANT"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "content",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "THROATS_POST"
+                ]
+              },
+              "content": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "CONTENT"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "post_id"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "THROATS_REPOST"
+                ]
+              },
+              "post_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "content",
+              "post_id",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "THROATS_COMMENT"
+                ]
+              },
+              "content": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "post_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "CONTENT"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "text",
+              "app",
+              "submit",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "TYPE_TEXT"
+                ]
+              },
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "app": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submit": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "TEXT"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "item",
+              "restaurant",
+              "app",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "APP_ORDER"
+                ]
+              },
+              "item": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "restaurant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "app": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "ITEM",
+                        "RESTAURANT",
+                        "APP"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "destination",
+              "hotel",
+              "book",
+              "room",
+              "check_in",
+              "check_out",
+              "adults",
+              "children",
+              "child_ages",
+              "rooms",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "HOTEL"
+                ]
+              },
+              "destination": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "hotel": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "book": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "room": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check_in": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check_out": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "adults": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "children": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "child_ages": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "rooms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "DESTINATION"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "text"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "CLICK_TEXT"
+                ]
+              },
+              "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -132,10 +132,6 @@ object HotelQuery {
         "(?:\\s+(?:on|in|using|via|with|through|at|from))?\\s+booking(?:\\s*\\.\\s*com|\\s+dot\\s+com|\\s*com)?(?:\\s+app)?(?=\\s|$)",
         RegexOption.IGNORE_CASE
     )
-    private val MENTIONS_BOOKING = Regex(
-        "booking\\s*(?:\\.\\s*|dot\\s+)?com\\b|\\b(?:on|using|via|with|through)\\s+booking\\b",
-        RegexOption.IGNORE_CASE
-    )
 
     /**
      * Leading "book me a cheap twin room at" and similar. Groups: 1 verb, 2 room type,
@@ -153,9 +149,6 @@ object HotelQuery {
     /** "the Hilton in Tokyo": the last " in " separates the hotel from the city ("Holiday Inn" is safe). */
     private val HOTEL_CITY_SEPARATOR = Regex("\\s+in\\s+", RegexOption.IGNORE_CASE)
     private val TRAILING_FILLER = Regex("\\s+(?:on|in|from|for|at|to)$", RegexOption.IGNORE_CASE)
-
-    /** True when [command] names Booking.com as the app to use. */
-    fun mentionsBooking(command: String): Boolean = MENTIONS_BOOKING.containsMatchIn(command)
 
     fun parse(command: String, today: StayDate = StayDate.today()): Parsed {
         var rest = " ${command.trim()} ".replace(BOOKING_APP, " ")
@@ -281,41 +274,6 @@ object HotelQuery {
         val babies = Regex("\\b(?:baby|infant|newborn|under\\s+(?:1|one))\\b").findAll(lower).count()
         val ages = Regex("\\b(\\d{1,2})\\b").findAll(lower).map { it.groupValues[1].toInt() }.filter { it in 0..17 }.toList()
         return List(babies) { 0 } + ages
-    }
-
-    /**
-     * The command for a stay, in words [parse] reads back; used to continue a conversation
-     * ("book a hotel in Tokyo" → "Which one?" → "the Hilton").
-     */
-    fun command(
-        destination: String,
-        hotel: String?,
-        checkIn: StayDate?,
-        checkOut: StayDate?,
-        book: Boolean,
-        room: String? = null,
-        guests: Guests? = null
-    ): String {
-        val place = if (destination.isNotEmpty()) " in $destination" else ""
-        val what = when {
-            hotel == null -> "find hotels$place"
-            book && room != null -> "book a $room at $hotel$place"
-            book -> "book $hotel$place"
-            else -> "find a room at $hotel$place"
-        }
-        val dates = checkIn?.let { start ->
-            val end = checkOut ?: start.plusDays(1)
-            " from ${start.label()} ${start.year} to ${end.label()} ${end.year}"
-        } ?: ""
-        // No "and": the command pipeline splits chained commands on it.
-        val who = guests?.let { g ->
-            buildString {
-                append(" for ${plural(g.adults, "adult")}")
-                if (g.childAges.isNotEmpty()) append(" ${plural(g.childAges.size, "child", "children")} aged ${g.childAges.joinToString(" ")}")
-                if (g.rooms > 1) append(" ${plural(g.rooms, "room")}")
-            }
-        } ?: ""
-        return "$what$dates$who on booking.com"
     }
 
     /**
