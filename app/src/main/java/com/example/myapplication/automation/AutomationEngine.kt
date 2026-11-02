@@ -30,6 +30,10 @@ class AutomationEngine(private val service: AccessibilityService) {
         private const val SCROLL_SETTLE_MS = 2000L
         /** Time for the window manager to apply [onGesturePassThrough] before a gesture is injected. */
         private const val PASS_THROUGH_SETTLE_MS = 60L
+        /** Search entries tried before giving up: a wrong first guess shouldn't end the search. */
+        private const val MAX_ENTRY_ATTEMPTS = 3
+        /** How long a tapped search entry gets to open its text field before the next is tried. */
+        private const val ENTRY_OPEN_MS = 2500L
 
         /** Promo/permission/sign-in popups that cover real apps after launch or on new screens. */
         private val DISMISS = listOf(
@@ -377,8 +381,10 @@ class AutomationEngine(private val service: AccessibilityService) {
     /**
      * Types [text] into the foreground app's search box, for apps we have no script for (e.g. the
      * real Foodpanda). Uses the focused field or a visible search field; if the screen only has a
-     * search *entry* (icon or fake bar that opens a search screen) it taps that first and waits
-     * for the real field. With [submit], presses the keyboard's search/enter key afterwards.
+     * search *entry* (icon or fake bar that opens a search screen) it taps the best one and waits
+     * for the real field, trying the next entry if nothing opens. When nothing is found it also
+     * closes a covering popup and scrolls back to the top, where collapsed search bars reappear.
+     * With [submit], presses the keyboard's search/enter key afterwards.
      */
     suspend fun typeIntoApp(
         text: String,
@@ -390,28 +396,46 @@ class AutomationEngine(private val service: AccessibilityService) {
         report("Looking for the search bar")
 
         val startTime = System.currentTimeMillis()
-        var tappedEntry = false
+        val tried = mutableSetOf<String>()
+        var lastTapAt = 0L
+        var dismissedPopup = false
+        var scrolledUp = false
+        // Search can open in another app's window (Settings search is its own package).
+        var fieldPackage = packageName
         var field: AccessibilityNodeInfo? = null
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            val fields = finder.textFields(packageName)
+            val now = System.currentTimeMillis()
             // A field that doesn't say "search" is only trusted once we've opened search ourselves,
             // or when the screen has settled without offering any search entry.
-            val settled = System.currentTimeMillis() - startTime >= SCROLL_SETTLE_MS
-            field = finder.focusedEditable(packageName)
-                ?: fields.firstOrNull { finder.looksLikeSearch(it) }
-                ?: fields.firstOrNull()?.takeIf { tappedEntry || settled }
+            val settled = now - startTime >= SCROLL_SETTLE_MS
+            field = pickField(packageName, trustAny = tried.isNotEmpty() || settled)
+            if (field == null && tried.isNotEmpty() && packageName != null) {
+                field = finder.focusedEditable(null) ?: finder.textFields(null).firstOrNull { finder.looksLikeSearch(it) }
+                if (field != null) fieldPackage = field.packageName?.toString()
+            }
             if (field != null) break
 
-            if (!tappedEntry) {
-                val entry = finder.searchEntry(packageName)
+            // Give the search screen time to open before deciding the last tap missed.
+            val waitingForTap = now - lastTapAt < ENTRY_OPEN_MS
+            if (!waitingForTap && tried.size < MAX_ENTRY_ATTEMPTS) {
+                val entry = finder.searchEntries(packageName, tried).firstOrNull()
                 if (entry != null) {
-                    Log.e(LOG, "[TYPE] tapping search entry class=${entry.className} text=${entry.text} desc=${entry.contentDescription}")
+                    Log.e(LOG, "[TYPE] tapping search entry class=${entry.className} text=${entry.text} desc=${entry.contentDescription} id=${entry.viewIdResourceName}")
                     report("Opening search")
+                    tried += finder.entryKey(entry)
                     performClick(entry, finder.clickTarget(entry))
-                    tappedEntry = true
+                    lastTapAt = System.currentTimeMillis()
                     delay(1000)
                     continue
                 }
+            }
+            if (settled && !waitingForTap && !dismissedPopup) {
+                dismissedPopup = true
+                if (dismissPopups(packageName)) continue
+            }
+            if (settled && tried.isEmpty() && !scrolledUp) {
+                scrolledUp = true
+                if (scroll(false, packageName)) continue
             }
             delay(POLL_INTERVAL)
         }
@@ -423,12 +447,12 @@ class AutomationEngine(private val service: AccessibilityService) {
             return false
         }
 
-        val typedInto = enterText(field, text, packageName) {
-            finder.focusedEditable(packageName) ?: finder.textFields(packageName).firstOrNull()
+        val typedInto = enterText(field, text, fieldPackage) {
+            finder.focusedEditable(fieldPackage) ?: finder.textFields(fieldPackage).firstOrNull()
         } ?: return false
 
         if (submit) {
-            val target = finder.focusedEditable(packageName) ?: typedInto
+            val target = finder.focusedEditable(fieldPackage) ?: typedInto
             if (pressImeEnter(target)) {
                 Log.e(LOG, "[TYPE] IME enter sent")
                 delay(800)
@@ -438,6 +462,13 @@ class AutomationEngine(private val service: AccessibilityService) {
             }
         }
         return true
+    }
+
+    /** The focused field, else a visible search field, else (with [trustAny]) any visible field. */
+    private fun pickField(packageName: String?, trustAny: Boolean): AccessibilityNodeInfo? {
+        finder.focusedEditable(packageName)?.let { return it }
+        val fields = finder.textFields(packageName)
+        return fields.firstOrNull { finder.looksLikeSearch(it) } ?: fields.firstOrNull()?.takeIf { trustAny }
     }
 
     /** Presses the keyboard's action key (Search/Go/Enter) on a focused field. Android 11+. */

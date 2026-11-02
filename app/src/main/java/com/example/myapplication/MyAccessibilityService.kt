@@ -3,7 +3,6 @@ package com.example.myapplication
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
@@ -28,6 +27,8 @@ import com.example.myapplication.automation.ScreenAgent
 import com.example.myapplication.automation.BookingAutomation
 import com.example.myapplication.automation.FoodDeliveryAutomation
 import com.example.myapplication.automation.FoodGorillaAutomation
+import com.example.myapplication.automation.InstalledApp
+import com.example.myapplication.automation.AppMatcher
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.ipc.CommandBridge
@@ -702,7 +703,10 @@ class MyAccessibilityService : AccessibilityService() {
 
             // Fallback: best-effort click on whatever was said
             is AppIntent.ClickText -> {
-                val node = automationEngine.waitForElement(Selector(text = intent.text), timeoutMs = 2000, packageName = null)
+                // Long enough for a screen that's still loading, and a few scrolls for a label below the fold.
+                val node = automationEngine.waitForElement(
+                    Selector(text = intent.text), timeoutMs = 6000, scrollIfNotFound = true, packageName = null, maxScrolls = 3
+                )
                 when {
                     node == null -> fail("I couldn't find “${intent.text}” on screen.")
                     // The user named the button, so other taps are fine, but ZeroUI never pays.
@@ -952,32 +956,24 @@ class MyAccessibilityService : AccessibilityService() {
         return if (safeStartActivity(launchIntent)) pkg else null
     }
 
-    /** Package of the installed app whose label best matches [name], or null. */
+    /**
+     * Package of the launchable app that best matches [name], or null. Only apps with a launcher
+     * icon are candidates, so "Google Play" can't stop at the iconless "Google Play services".
+     */
     private fun findAppByName(name: String): String? {
+        if (name.isBlank()) return null
+        val match = AppMatcher.best(name, launcherApps())
+        Log.d("NLPControl", "App \"$name\" -> ${match?.let { "${it.label} (${it.packageName})" } ?: "no match"}")
+        return match?.packageName
+    }
+
+    private fun launcherApps(): List<InstalledApp> {
         val pm = packageManager
-        val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-        val cleanName = name.lowercase().trim()
-        if (cleanName.isEmpty()) return null
-
-        // Try searching by label
-        var target = apps.find {
-            pm.getApplicationLabel(it).toString().lowercase() == cleanName
-        }
-
-        if (target == null) {
-            target = apps.find {
-                pm.getApplicationLabel(it).toString().lowercase().contains(cleanName)
-            }
-        }
-
-        // Fallback: If searching for NCCUbank, try searching by package name directly
-        if (target == null && cleanName.contains("nccu")) {
-            target = apps.find {
-                it.packageName == NCCUBANK_PKG
-            }
-        }
-
-        return target?.packageName?.takeIf { pm.getLaunchIntentForPackage(it) != null }
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        return pm.queryIntentActivities(launcher, 0)
+            .map { InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName) }
+            .filter { it.packageName != packageName }
+            .distinctBy { it.packageName to it.label }
     }
 
     private fun safeStartActivity(intent: Intent): Boolean {

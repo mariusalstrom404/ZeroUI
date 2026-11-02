@@ -10,7 +10,7 @@ import kotlinx.coroutines.delay
 class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDevice {
 
     private companion object {
-        const val MAX_NODES = 150
+        const val MAX_NODES = 250
         const val MAX_LABEL = 200
         const val SETTLE_POLL_MS = 500L
         const val SETTLE_TIMEOUT_MS = 4000L
@@ -37,12 +37,19 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
         val root = finder.roots().firstOrNull()
         val nodes = mutableListOf<ScreenNode>()
         val map = mutableMapOf<Int, AccessibilityNodeInfo>()
+        val labelled = mutableListOf<Pair<String, android.graphics.Rect>>()
         if (root != null) {
             for (node in finder.flatten(root)) {
                 if (nodes.size >= MAX_NODES) break
                 if (!node.isVisibleToUser || finder.boundsOf(node).isEmpty) continue
                 val label = labelOf(node)
-                if (label == null && !node.isClickable && !node.isEditable && !node.isScrollable) continue
+                val interactive = node.isClickable || node.isEditable || node.isScrollable
+                if (label == null && !interactive) continue
+                // A button's text child repeats the button's label; listing it again only uses up
+                // the node budget, which used to cut off whatever came last (often the bottom tabs).
+                val bounds = finder.boundsOf(node)
+                if (!interactive && labelled.any { (l, b) -> l == label && b.contains(bounds) }) continue
+                if (interactive && label != null) labelled += label to bounds
                 val id = nodes.size
                 nodes += ScreenNode(
                     id = id,

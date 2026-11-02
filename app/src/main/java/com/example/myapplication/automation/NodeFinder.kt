@@ -30,7 +30,6 @@ class NodeFinder(private val service: AccessibilityService) {
         /** A click target with more nodes than this is a card or row, not a labelled button. */
         private const val MAX_LABELLED_TARGET_NODES = 12
         private val SEARCH_FIELD_TAGS = setOf("search_bar", "menu_search_bar")
-        private val SEARCH_WORDS = listOf("search", "搜尋", "搜索", "搜寻")
     }
 
     /** Roots of the application windows to search, top-most first, excluding ZeroUI itself. */
@@ -85,7 +84,7 @@ class NodeFinder(private val service: AccessibilityService) {
                 }
                 ?: selector.text?.let { target ->
                     bestTextMatch(nodes, selector.exact) {
-                        maxOf(TextMatch.score(it.text, target), TextMatch.score(it.contentDescription, target))
+                        maxOf(TextMatch.score(it.text, target), TextMatch.score(it.contentDescription, target), TextMatch.score(hintOf(it), target))
                     }
                 }
                 ?: findSearchField(nodes, selector)
@@ -111,6 +110,9 @@ class NodeFinder(private val service: AccessibilityService) {
         }?.let { return it }
         return nodes.firstOrNull { composeTestTag(it) == id }
     }
+
+    private fun hintOf(node: AccessibilityNodeInfo): CharSequence? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) node.hintText else null
 
     /** Compose only reports testTag as a resource id with `testTagsAsResourceId`; otherwise it is extra data. */
     private fun composeTestTag(node: AccessibilityNodeInfo): String? {
@@ -175,25 +177,43 @@ class NodeFinder(private val service: AccessibilityService) {
         mentionsSearch(field) || flatten(field).any { mentionsSearch(it) }
 
     /**
-     * A tappable way into search: a search icon, button or the non-editable "fake" search bar
-     * many real apps (Foodpanda, Uber Eats…) show on their home screen, which opens a separate
-     * search screen with the real text field.
+     * Tappable ways into search, best first: a search icon, button or the non-editable "fake"
+     * search bar many real apps (Foodpanda, Google Drive…) show on their home screen, which opens
+     * a separate search screen with the real text field. Candidates whose [entryKey] is in
+     * [exclude] (already tried) are left out. Ranking prefers a clear "Search" label, something
+     * that can actually be tapped, and the top of the screen where search bars live.
      */
-    fun searchEntry(packageName: String? = null): AccessibilityNodeInfo? {
+    fun searchEntries(packageName: String? = null, exclude: Set<String> = emptySet()): List<AccessibilityNodeInfo> {
+        val screenHeight = service.resources.displayMetrics.heightPixels
         for (root in roots(packageName)) {
-            flatten(root)
-                .firstOrNull { it.isVisibleToUser && !boundsOf(it).isEmpty && !isNearlyFullScreen(it) && mentionsSearch(it) }
-                ?.let { return it }
+            val ranked = flatten(root)
+                .asSequence()
+                .filter { it.isVisibleToUser && !boundsOf(it).isEmpty && !isNearlyFullScreen(it) }
+                .map { it to searchScore(it) }
+                .filter { (node, cue) -> cue > SearchCue.NONE && entryKey(node) !in exclude }
+                .map { (node, cue) ->
+                    val tappable = node.isClickable || node.isEditable || clickTarget(node) != null
+                    val top = boundsOf(node).centerY() < screenHeight * 0.4
+                    node to cue + (if (tappable) 15 else 0) + (if (top) 10 else 0)
+                }
+                .sortedByDescending { it.second }
+                .map { it.first }
+                .toList()
+            if (ranked.isNotEmpty()) return ranked
         }
-        return null
+        return emptyList()
     }
 
-    private fun mentionsSearch(node: AccessibilityNodeInfo): Boolean {
+    /** Identifies a search entry across polls, so a failed one isn't tapped again. */
+    fun entryKey(node: AccessibilityNodeInfo): String =
+        "${boundsOf(node).toShortString()}|${node.text}|${node.contentDescription}|${node.viewIdResourceName}"
+
+    private fun searchScore(node: AccessibilityNodeInfo): Int {
         val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) node.hintText else null
-        return listOf(node.text, hint, node.contentDescription, node.viewIdResourceName).any { value ->
-            value != null && SEARCH_WORDS.any { value.contains(it, ignoreCase = true) }
-        }
+        return SearchCue.score(node.text.takeUnless { node.isPassword }, node.contentDescription, hint, node.viewIdResourceName)
     }
+
+    private fun mentionsSearch(node: AccessibilityNodeInfo): Boolean = searchScore(node) > SearchCue.NONE
 
     /** The editable field holding input focus in [packageName]'s windows, if any. */
     fun focusedEditable(packageName: String? = null): AccessibilityNodeInfo? =
