@@ -20,7 +20,11 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
 import android.widget.Button
+import com.example.myapplication.automation.AccessibilityScreenDevice
+import com.example.myapplication.automation.ActionGuard
+import com.example.myapplication.automation.AgentUser
 import com.example.myapplication.automation.AutomationEngine
+import com.example.myapplication.automation.ScreenAgent
 import com.example.myapplication.automation.BookingAutomation
 import com.example.myapplication.automation.FoodDeliveryAutomation
 import com.example.myapplication.automation.FoodGorillaAutomation
@@ -29,6 +33,7 @@ import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.HotelQuery
+import com.example.myapplication.nlp.OpenAiLlmClient
 import com.example.myapplication.nlp.StayDate
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
@@ -81,7 +86,10 @@ class MyAccessibilityService : AccessibilityService() {
         private const val URI_FG_CHECKOUT = "foodgorilla://app/checkout"
         private const val URI_FG_BUY_NOW = "foodgorilla://api/buy_now"
 
-        private val UUID_PATTERN = Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+        private const val APP_START_MS = 1500L
+        private const val ANSWER_TIMEOUT_MS = 60000L
+
+        private val UUID_PATTERN =Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -156,9 +164,15 @@ class MyAccessibilityService : AccessibilityService() {
                 val progress = if (commands.size > 1) "Command ${index + 1} of ${commands.size}" else null
                 processSingleCommand(intent, progress)
                 when (outcome) {
-                    Outcome.FAILED -> if (failure == null) failure = lastReply
+                    Outcome.FAILED -> failure = lastReply
                     Outcome.NEEDS_INPUT -> question = lastReply
                     Outcome.OK -> {}
+                }
+                // Later commands may depend on this one, so they don't run on top of a failure.
+                if (outcome != Outcome.OK) {
+                    val skipped = commands.size - index - 1
+                    if (skipped > 0) sendReply("I didn't do the $skipped remaining ${if (skipped == 1) "command" else "commands"}.")
+                    break
                 }
                 if (index < commands.lastIndex) {
                     statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${describe(commands[index + 1])}")
@@ -229,6 +243,7 @@ class MyAccessibilityService : AccessibilityService() {
         }
         is AppIntent.TypeText -> if (intent.submit) "Searching for “${intent.text}”" else "Typing “${intent.text}”"
         is AppIntent.ClickText -> "Looking for “${intent.text}” on screen"
+        is AppIntent.AppTask -> intent.goal
         AppIntent.Unknown -> "Working on it"
     }
 
@@ -269,6 +284,7 @@ class MyAccessibilityService : AccessibilityService() {
                             packageName = NCCUBANK_PKG
                         )
                         if (success != null) sendReply("Transfer completed successfully!")
+                        else fail("I started the transfer but couldn't confirm it went through. Please check NCCUbank.")
                     } else {
                         // Deep link failed, try manual navigation
                         val pkg = launchAppByName("NCCUbank")
@@ -348,12 +364,13 @@ class MyAccessibilityService : AccessibilityService() {
                     // Optimized extraction for "item from restaurant"
                     val fromIndex = query.indexOf(" from ", ignoreCase = true)
 
-                    val (item, restaurant) = if (fromIndex != -1) {
-                        query.substring(0, fromIndex).trim() to query.substring(fromIndex + 6).trim()
-                    } else {
-                        // Fallback: use query as item, default to "MidOnald's"
-                        query to "MidOnald's"
+                    // CommandConversation asks for the restaurant, so this is only a safety net.
+                    if (fromIndex == -1) {
+                        ask("Which restaurant should I order $query from?")
+                        return
                     }
+                    val item = query.substring(0, fromIndex).trim()
+                    val restaurant = query.substring(fromIndex + 6).trim()
 
                     sendReply("Executing FoodGorilla automation for $item at $restaurant.")
                     Log.e("ZeroUIAutomation", "FOOD AUTOMATION START: $item at $restaurant")
@@ -613,21 +630,12 @@ class MyAccessibilityService : AccessibilityService() {
                             fail("I couldn't find an app named ${intent.app}.")
                         } else {
                             sendReply("Looking for ${intent.item} from $restaurant on ${intent.app}.")
-                            when (foodDeliveryAuto.order(pkg, restaurant, intent.item)) {
+                            when (val result = foodDeliveryAuto.order(pkg, restaurant, intent.item)) {
                                 FoodDeliveryAutomation.Result.ADDED ->
                                     sendReply("I added ${intent.item} from $restaurant to your ${intent.app} cart. Please review it and check out yourself.")
                                 FoodDeliveryAutomation.Result.ADDED_UNVERIFIED ->
                                     sendReply("I tapped Add to cart for ${intent.item}. Please check your ${intent.app} cart to make sure it's there.")
-                                FoodDeliveryAutomation.Result.NEEDS_OPTIONS ->
-                                    ask("${intent.item} needs a few choices (like size or toppings). Please pick them on screen, then tap Add to cart.")
-                                FoodDeliveryAutomation.Result.SEARCH_FAILED ->
-                                    fail("I couldn't use the search bar in ${intent.app}.")
-                                FoodDeliveryAutomation.Result.RESTAURANT_NOT_FOUND ->
-                                    fail("I couldn't find $restaurant in the ${intent.app} search results.")
-                                FoodDeliveryAutomation.Result.ITEM_NOT_FOUND ->
-                                    fail("I opened $restaurant but couldn't find ${intent.item} on the menu.")
-                                FoodDeliveryAutomation.Result.ADD_FAILED ->
-                                    fail("I found ${intent.item} but couldn't find the Add to cart button.")
+                                else -> recoverOrder(intent, restaurant, result)
                             }
                         }
                     }
@@ -681,17 +689,38 @@ class MyAccessibilityService : AccessibilityService() {
                     pkg == null && appPkg != null -> fail("I couldn't open ${intent.app}.")
                     pkg == null -> fail("Open the app you want to search in first.")
                     automationEngine.typeIntoApp(text, intent.submit, pkg, timeoutMs = if (pkg != foreground) 15000 else 8000) ->
-                        sendReply(if (intent.submit) "Searching for $text." else "Typed $text.")
+                        sendReply(
+                            when {
+                                !automationEngine.lastInputVerified -> "I entered $text but couldn't confirm it appeared. Please check the screen."
+                                intent.submit -> "Searching for $text."
+                                else -> "Typed $text."
+                            }
+                        )
                     else -> fail("I couldn't find a search bar to type “$text” into.")
                 }
             }
 
             // Fallback: best-effort click on whatever was said
             is AppIntent.ClickText -> {
-                if (performClickOnText(intent.text)) {
-                    sendReply("Clicked on ${intent.text}.")
+                val node = automationEngine.waitForElement(Selector(text = intent.text), timeoutMs = 2000, packageName = null)
+                when {
+                    node == null -> fail("I couldn't find “${intent.text}” on screen.")
+                    // The user named the button, so other taps are fine, but ZeroUI never pays.
+                    ActionGuard.forTap(automationEngine.finder.tapLabels(node)) == ActionGuard.Verdict.BLOCK ->
+                        sendReply("That looks like a payment step, so I left it for you to tap yourself.")
+                    automationEngine.click(node) -> sendReply("Clicked on ${intent.text}.")
+                    else -> fail("I couldn't tap “${intent.text}”.")
+                }
+            }
+
+            // Any app: the screen agent works it out from what's on screen.
+            is AppIntent.AppTask -> {
+                val pkg = intent.app?.let { launchAppByName(it) }
+                if (intent.app != null && pkg == null) {
+                    fail("I couldn't find an app named ${intent.app}.")
                 } else {
-                    fail("I couldn't find “${intent.text}” on screen.")
+                    if (pkg != null) delay(APP_START_MS)
+                    reportAgent(runAgent(intent.goal, ScreenAgent.DEFAULT_MAX_STEPS))
                 }
             }
 
@@ -699,6 +728,72 @@ class MyAccessibilityService : AccessibilityService() {
             AppIntent.Unknown -> {
                 fail("Sorry, I didn't understand that.")
             }
+        }
+    }
+
+    private suspend fun runAgent(goal: String, maxSteps: Int): ScreenAgent.Outcome =
+        ScreenAgent(
+            AccessibilityScreenDevice(automationEngine),
+            OpenAiLlmClient(assets),
+            AgentUser { askByVoice(it) },
+            onProgress = { automationEngine.report(it) }
+        ).run(goal, maxSteps)
+
+    /** The script couldn't finish an order: the agent carries on from whatever is on screen. */
+    private suspend fun recoverOrder(intent: AppIntent.AppOrder, restaurant: String, result: FoodDeliveryAutomation.Result) {
+        statusIndicator?.show(Phase.WORKING, "Trying another way", "${intent.item} from $restaurant")
+        val goal = "In ${intent.app}, add ${intent.item} from $restaurant to the cart. " +
+            "If it has required choices, ask me which ones I want. Stop once it's in the cart."
+        when (val outcome = runAgent(goal, ScreenAgent.RECOVERY_MAX_STEPS)) {
+            is ScreenAgent.Outcome.Done ->
+                sendReply("${outcome.summary ?: "I added it."} Please review your cart and check out yourself.")
+            // The script's own message says more than "the language service is unreachable" here.
+            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp, ScreenAgent.Outcome.OutOfSteps ->
+                when (result) {
+                    FoodDeliveryAutomation.Result.NEEDS_OPTIONS ->
+                        ask("${intent.item} needs a few choices (like size or toppings). Please pick them on screen, then tap Add to cart.")
+                    FoodDeliveryAutomation.Result.SEARCH_FAILED -> fail("I couldn't use the search bar in ${intent.app}.")
+                    FoodDeliveryAutomation.Result.RESTAURANT_NOT_FOUND -> fail("I couldn't find $restaurant in the ${intent.app} search results.")
+                    FoodDeliveryAutomation.Result.ITEM_NOT_FOUND -> fail("I opened $restaurant but couldn't find ${intent.item} on the menu.")
+                    else -> fail("I found ${intent.item} but couldn't find the Add to cart button.")
+                }
+            else -> reportAgent(outcome)
+        }
+    }
+
+    private fun reportAgent(outcome: ScreenAgent.Outcome) {
+        when (outcome) {
+            is ScreenAgent.Outcome.Done -> sendReply(outcome.summary ?: "Done.")
+            is ScreenAgent.Outcome.HandedOver ->
+                sendReply("I stopped at “${outcome.what}”. I don't pay or enter private details, so nothing has been submitted; please finish this step yourself.")
+            ScreenAgent.Outcome.Declined -> sendReply("Okay, I stopped there.")
+            ScreenAgent.Outcome.NoAnswer -> ask("I didn't get an answer, so I stopped there.")
+            is ScreenAgent.Outcome.GaveUp -> fail("I couldn't finish that${outcome.reason?.let { ": $it" } ?: "."}")
+            ScreenAgent.Outcome.OutOfSteps -> fail("That was taking too many steps, so I stopped. Please check the screen.")
+            ScreenAgent.Outcome.Unavailable -> fail("I can't reach my language service right now, so I stopped.")
+        }
+    }
+
+    /**
+     * Says [question], opens the voice dialog over the app and waits for the reply. It stays a
+     * stoppable phase, so the stop button keeps working while waiting. Typing in the dialog also
+     * answers, which is the way out if speech recognition fails.
+     */
+    private suspend fun askByVoice(question: String): String? {
+        statusIndicator?.show(Phase.WORKING, "Waiting for your answer", question)
+        CommandBridge.postReply(question)
+        Speaker.speakAndWait(question)
+        val answer = CommandBridge.expectAnswer()
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    .putExtra("start_voice", true)
+            )
+            return withTimeoutOrNull(ANSWER_TIMEOUT_MS) { answer.await() }
+                ?.also { statusIndicator?.show(Phase.WORKING, "Continuing", it) }
+        } finally {
+            CommandBridge.clearAnswer(answer)
         }
     }
 

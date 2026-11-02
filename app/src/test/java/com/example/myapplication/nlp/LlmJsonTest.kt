@@ -1,5 +1,6 @@
 package com.example.myapplication.nlp
 
+import com.example.myapplication.automation.ScreenAction
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -116,6 +117,63 @@ class LlmJsonTest {
         assertEquals(LlmAnswer.Status.UNCLEAR, answer.status)
         assertNull(answer.value)
         assertEquals(emptyList<Int>(), answer.childAges)
+    }
+
+    @Test
+    fun bookingQuestionsGoToTheBookingConversation() {
+        val command = LlmJson.commands(
+            """{"commands":[{"intent":"HOTEL","destination":"Tokyo","hotel":null,"book":true,"missing":[""" +
+                """{"slot":"HOTEL","question":"Which hotel?"},{"slot":"DATES","question":"When?"},{"slot":"DESTINATION","question":"Where?"}]}]}""",
+            today
+        ).single()
+        assertEquals("Which hotel?", command.bookingQuestions[BookingConversation.Slot.HOTEL])
+        assertEquals("When?", command.bookingQuestions[BookingConversation.Slot.DATES])
+        assertTrue(command.questions.isEmpty())
+    }
+
+    @Test
+    fun hotelSearchQuestionsStayFollowUps() {
+        val command = LlmJson.commands(
+            """{"commands":[{"intent":"HOTEL","destination":null,"hotel":null,"book":false,"missing":[{"slot":"DESTINATION","question":"Where?"}]}]}""",
+            today
+        ).single()
+        assertEquals("Where?", command.questions[FollowUpSlot.DESTINATION])
+        assertTrue(command.bookingQuestions.isEmpty())
+    }
+
+    @Test
+    fun readsAppTask() {
+        assertEquals(
+            AppIntent.AppTask("turn on dark mode", "Settings"),
+            intent(""""intent":"APP_TASK","goal":"turn on dark mode","app":"Settings"""")
+        )
+        assertEquals(AppIntent.Unknown, intent(""""intent":"APP_TASK","goal":null,"app":null"""))
+    }
+
+    @Test
+    fun readsScreenActions() {
+        assertEquals(
+            ScreenAction.Tap(7),
+            LlmJson.screenAction("""{"action":"tap","node":7,"text":null,"submit":false,"say":null}""")
+        )
+        assertEquals(
+            ScreenAction.Type(2, "pizza", true),
+            LlmJson.screenAction("""{"action":"type","node":2,"text":"pizza","submit":true,"say":null}""")
+        )
+        assertEquals(
+            ScreenAction.Ask("Small or large?"),
+            LlmJson.screenAction("""{"action":"ask_user","node":null,"text":null,"submit":false,"say":"Small or large?"}""")
+        )
+    }
+
+    @Test
+    fun negativeNodeReadsAsMissing() {
+        assertEquals(ScreenAction.Tap(null), LlmJson.screenAction("""{"action":"tap","node":-1}"""))
+    }
+
+    @Test(expected = LlmUnavailableException::class)
+    fun unknownScreenActionIsUnavailable() {
+        LlmJson.screenAction("""{"action":"pay","node":1}""")
     }
 
     @Test

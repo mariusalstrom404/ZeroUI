@@ -45,6 +45,9 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     /** Set by the host Activity to route assistant text to text-to-speech. */
     var speak: (String) -> Unit = {}
 
+    /** Set by the host Activity to get out of the way once a running automation has its answer. */
+    var onAnswered: () -> Unit = {}
+
     init {
         loadHistory()
         if (messages.isEmpty()) {
@@ -115,6 +118,11 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onUserCommand(userInput: String) {
         messages.add(Message(userInput, true))
+        // A running automation asked a question; this is its answer, not a new command.
+        if (CommandBridge.deliverAnswer(userInput)) {
+            onAnswered()
+            return
+        }
         requestJob?.cancel()
         isProcessing = true
         CommandBridge.showUnderstanding(userInput)
@@ -140,6 +148,8 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         if (remote.isEmpty()) {
             CommandBridge.clearUnderstanding()
         } else {
+            // A task in the app already in front needs this dialog out of its way.
+            if (remote.any { it is AppIntent.AppTask && it.app == null }) onAnswered()
             dispatchToService(remote)
         }
     }

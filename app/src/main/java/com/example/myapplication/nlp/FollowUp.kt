@@ -10,7 +10,13 @@ fun AppIntent.missingSlots(): List<FollowUpSlot> = when (this) {
         FollowUpSlot.RECIPIENT.takeIf { recipient.isNullOrBlank() }
     )
     is AppIntent.FoodSearch -> listOfNotNull(FollowUpSlot.QUERY.takeIf { query.isBlank() })
-    is AppIntent.FoodOrder -> listOfNotNull(FollowUpSlot.ITEM.takeIf { itemId == null && query.isNullOrBlank() })
+    is AppIntent.FoodOrder -> when {
+        itemId != null -> emptyList()
+        query.isNullOrBlank() -> listOf(FollowUpSlot.ITEM)
+        // The service reads the query as "item from restaurant".
+        !query.contains(" from ", ignoreCase = true) -> listOf(FollowUpSlot.RESTAURANT)
+        else -> emptyList()
+    }
     is AppIntent.FoodMenu -> listOfNotNull(FollowUpSlot.RESTAURANT.takeIf { restaurant.isBlank() })
     is AppIntent.ThroatsPost -> listOfNotNull(FollowUpSlot.CONTENT.takeIf { content.isBlank() })
     is AppIntent.ThroatsComment -> listOfNotNull(FollowUpSlot.CONTENT.takeIf { content.isBlank() })
@@ -39,7 +45,10 @@ fun AppIntent.fill(slot: FollowUpSlot, value: String): AppIntent? = when (this) 
         else -> null
     }
     is AppIntent.FoodSearch -> copy(query = value)
-    is AppIntent.FoodOrder -> copy(query = value)
+    is AppIntent.FoodOrder -> when (slot) {
+        FollowUpSlot.RESTAURANT -> copy(query = "$query from $value")
+        else -> copy(query = value)
+    }
     is AppIntent.FoodMenu -> copy(restaurant = value)
     is AppIntent.ThroatsPost -> copy(content = value)
     is AppIntent.ThroatsComment -> copy(content = value)

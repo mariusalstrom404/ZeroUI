@@ -2,7 +2,7 @@ ZeroUI: Voice-Driven Interface System
 
 ZeroUI is a lightweight, voice-first interaction system that eliminates the need for traditional graphical user interfaces. Instead of tapping, swiping, or navigating menus, users interact with devices through natural language commands, enabling a more intuitive and hands-free experience.
 
-This project focuses on translating spoken input into executable actions on a device. Commands are understood by a cloud LLM (OpenAI), so the text of each command leaves the device and an internet connection is required. See docs/llm-setup-and-testing.md for setup.
+This project focuses on translating spoken input into executable actions on a device. Commands are understood by a cloud LLM (OpenAI), so the text of each command leaves the device and an internet connection is required. For tasks in apps without a script, on-screen text read from the accessibility tree is also sent to OpenAI (never screenshots, or what's typed in password fields). See docs/llm-setup-and-testing.md for setup.
 
 Key Features
 

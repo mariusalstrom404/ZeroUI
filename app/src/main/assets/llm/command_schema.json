@@ -365,7 +365,8 @@
                     "slot": {
                       "type": "string",
                       "enum": [
-                        "ITEM"
+                        "ITEM",
+                        "RESTAURANT"
                       ]
                     },
                     "question": {
@@ -760,7 +761,12 @@
                     "slot": {
                       "type": "string",
                       "enum": [
-                        "DESTINATION"
+                        "DESTINATION",
+                        "HOTEL",
+                        "DATES",
+                        "GUESTS",
+                        "CHILD_AGES",
+                        "ROOM"
                       ]
                     },
                     "question": {
@@ -786,6 +792,35 @@
                 ]
               },
               "text": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "goal",
+              "app"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "APP_TASK"
+                ]
+              },
+              "goal": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "app": {
                 "type": [
                   "string",
                   "null"

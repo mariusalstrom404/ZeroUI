@@ -27,6 +27,8 @@ class NodeFinder(private val service: AccessibilityService) {
         private const val MAX_CLICK_ANCESTOR_DEPTH = 8
         /** A clickable ancestor bigger than this share of the screen is a container/scrim, not the button. */
         private const val MAX_CLICK_TARGET_SCREEN_SHARE = 0.6
+        /** A click target with more nodes than this is a card or row, not a labelled button. */
+        private const val MAX_LABELLED_TARGET_NODES = 12
         private val SEARCH_FIELD_TAGS = setOf("search_bar", "menu_search_bar")
         private val SEARCH_WORDS = listOf("search", "搜尋", "搜索", "搜寻")
     }
@@ -222,6 +224,19 @@ class NodeFinder(private val service: AccessibilityService) {
             depth++
         }
         return null
+    }
+
+    /** Everything a tap on [node] would activate: its own labels and those of its click target. */
+    fun tapLabels(node: AccessibilityNodeInfo): List<String> {
+        val target = clickTarget(node)
+        val inTarget = target?.let { flatten(it) }?.takeIf { it.size <= MAX_LABELLED_TARGET_NODES }.orEmpty()
+        return (listOf(node) + listOfNotNull(target) + inTarget)
+            .flatMap { n ->
+                val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) n.hintText else null
+                listOf(n.text.takeUnless { n.isPassword }, n.contentDescription, hint)
+            }
+            .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+            .distinct()
     }
 
     /** The editable field for [node]: itself, or an editable descendant (Compose puts testTags on wrappers). */

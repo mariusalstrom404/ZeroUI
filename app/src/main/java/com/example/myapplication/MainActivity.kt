@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
         }
         Speaker.init(this)
         viewModel.speak = { Speaker.speak(it) }
+        // The automation taps the app underneath, so this dialog must not stay on top of it.
+        viewModel.onAnswered = { moveTaskToBack(true) }
 
         setContent {
             MyApplicationTheme {

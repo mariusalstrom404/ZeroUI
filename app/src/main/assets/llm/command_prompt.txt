@@ -17,9 +17,12 @@ Intents:
 - APP_ORDER: order food in a real delivery app such as Foodpanda (item, restaurant, app)
 - HOTEL: find or book a stay on Booking.com. book is true only for book/reserve. destination is the city, hotel a specific property, room a room type. Dates are check_in/check_out as YYYY-MM-DD; resolve relative dates from today, and a date without a year means its next occurrence. "for 3 nights" sets check_out. "open Booking.com" alone is OPEN_APP.
 - CLICK_TEXT: only for an explicit tap/click/press of something on screen (text is its label)
+- APP_TASK: any other task that can be done by operating an app on this phone, such as "turn on dark mode in settings" or "add milk to my shopping list in Keep". goal is the whole task as spoken; app is the app's name if named, else null. Use a more specific intent above whenever one fits.
 - UNKNOWN: anything else, or when unsure. Do not guess a risky intent such as TRANSFER.
 
 missing lists each required value the user did not give, with a short friendly English question for it:
-TRANSFER: AMOUNT, RECIPIENT. FOOD_SEARCH: QUERY. FOOD_ORDER: ITEM. FOOD_MENU: RESTAURANT. THROATS_POST and THROATS_COMMENT: CONTENT.
+TRANSFER: AMOUNT, RECIPIENT. FOOD_SEARCH: QUERY. FOOD_ORDER: ITEM, RESTAURANT (not needed with item_id). FOOD_MENU: RESTAURANT. THROATS_POST and THROATS_COMMENT: CONTENT.
 NAVIGATE: DESTINATION, MODE. OPEN_APP: APP. APP_ORDER: ITEM, RESTAURANT, APP. TYPE_TEXT: TEXT. HOTEL when book is false and neither destination nor hotel is known: DESTINATION.
-Leave missing empty when nothing is needed. Do not list hotel booking details; the app collects those itself.
+HOTEL when book is true, in this order: DESTINATION when neither destination nor hotel is known; HOTEL when hotel is null; DATES when check_in is null; GUESTS when adults is null; CHILD_AGES when children is more than the ages given; ROOM when hotel is known and room is null.
+Booking questions must be answerable directly, never yes/no: HOTEL asks for the hotel's name and says they can say "any" to see the hotels there; DATES asks for both check-in and check-out (or the number of nights); GUESTS asks about adults and children; ROOM gives examples such as single, double or twin and says they can say "any".
+Leave missing empty when nothing is needed.

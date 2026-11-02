@@ -46,6 +46,10 @@ class AutomationEngine(private val service: AccessibilityService) {
 
     private var hasDumpedTree = false
 
+    /** Whether the last typed text could be seen in the field or on screen afterwards. */
+    var lastInputVerified = false
+        private set
+
     /** Receives short, user-facing descriptions of what the engine is doing (for the status overlay). */
     var onProgress: ((String) -> Unit)? = null
 
@@ -442,6 +446,17 @@ class AutomationEngine(private val service: AccessibilityService) {
         return field.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
     }
 
+    /** Types into a field the screen agent chose. */
+    suspend fun typeIntoNode(node: AccessibilityNodeInfo, text: String, submit: Boolean): Boolean {
+        val packageName = node.packageName?.toString()
+        val field = enterText(node, text, packageName) { finder.focusedEditable(packageName) } ?: return false
+        if (submit) {
+            pressImeEnter(finder.focusedEditable(packageName) ?: field)
+            delay(800)
+        }
+        return true
+    }
+
     /**
      * Focuses [node] and replaces its content with [text], retrying on [refind]'s field and then
      * via the clipboard if the app rejects ACTION_SET_TEXT. Returns the field typed into, or null.
@@ -453,6 +468,7 @@ class AutomationEngine(private val service: AccessibilityService) {
         refind: () -> AccessibilityNodeInfo?
     ): AccessibilityNodeInfo? {
         report("Typing “$text”")
+        lastInputVerified = false
 
         Log.e(LOG, "[INPUT] field class=${node.className} id=${node.viewIdResourceName} focused=${node.isFocused}")
         Log.e(LOG, "[INPUT] value = $text")
@@ -486,12 +502,14 @@ class AutomationEngine(private val service: AccessibilityService) {
 
                 if (freshText.contains(text, ignoreCase = true)) {
                     Log.e(LOG, "[INPUT] VERIFIED SUCCESS")
+                    lastInputVerified = true
                     return field
                 }
 
                 // Second success condition: the text appears elsewhere (e.g. search results)
                 if (finder.find(Selector(text = text, classNameExclude = "EditText"), packageName) != null) {
                     Log.e(LOG, "[INPUT] VERIFIED SUCCESS (Result found on screen)")
+                    lastInputVerified = true
                     return field
                 }
                 delay(300)
@@ -500,7 +518,10 @@ class AutomationEngine(private val service: AccessibilityService) {
             field = finder.focusedEditable(packageName) ?: field
             pasteText(field, text)
             delay(800)
-            return field // Still succeed if the action was accepted, to avoid blocking workflow
+            // Some fields never expose their text, so this doesn't block the workflow; callers
+            // that tell the user what was typed check [lastInputVerified].
+            lastInputVerified = field.refresh() && field.text?.toString()?.contains(text, ignoreCase = true) == true
+            return field
         }
 
         Log.e(LOG, "[INPUT] FAILED")

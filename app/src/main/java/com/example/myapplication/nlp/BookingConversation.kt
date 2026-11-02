@@ -9,7 +9,15 @@ package com.example.myapplication.nlp
  * Answers are read with [HotelQuery] first. One it can't read comes back as an [Outcome.Ask] with
  * `retry` set, and the caller may pass the LLM's reading of it to [apply].
  */
-class BookingConversation(start: AppIntent.HotelSearch, private val today: StayDate = StayDate.today()) {
+class BookingConversation(
+    start: AppIntent.HotelSearch,
+    private val today: StayDate = StayDate.today(),
+    /**
+     * The LLM's wording for the details it found missing. Which details are missing is still
+     * decided here; a slot the LLM didn't word, or a repeated question, uses the built-in text.
+     */
+    private val llmQuestions: Map<Slot, String> = emptyMap()
+) {
 
     enum class Slot { DESTINATION, HOTEL, DATES, GUESTS, CHILD_AGES, ROOM }
 
@@ -152,8 +160,9 @@ class BookingConversation(start: AppIntent.HotelSearch, private val today: StayD
 
     private fun next(retry: Boolean): Outcome {
         val slot = missing() ?: return done()
-        val sorry = if (retry) "Sorry, I didn't catch that. " else ""
-        return Outcome.Ask(slot, sorry + question(slot), retry)
+        // A retry keeps the built-in question: its examples show what kind of answer is needed.
+        val text = if (retry) "Sorry, I didn't catch that. ${question(slot)}" else llmQuestions[slot] ?: question(slot)
+        return Outcome.Ask(slot, text, retry)
     }
 
     private fun question(slot: Slot): String = when (slot) {
