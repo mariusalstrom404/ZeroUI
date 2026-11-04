@@ -30,10 +30,40 @@ object LlmJson {
         return JSONObject()
             .put("model", model)
             .put("store", false)
+            // Calls of one kind share a prompt start, so route them to the same cache.
+            .put("prompt_cache_key", "zeroui-$name")
             .put("instructions", instructions)
             .put("input", input)
             .put("text", JSONObject().put("format", format))
             .toString()
+    }
+
+    // Inputs put what changes between calls last; each prompt's instructions stay the same for
+    // every call, so OpenAI can reuse their processing (see OpenAiLlmClient).
+
+    fun commandInput(today: StayDate, utterance: String): String =
+        "Today: ${isoDate(today)}\nCommand: $utterance"
+
+    fun answerInput(today: StayDate, slot: String, question: String, answer: String): String =
+        "Today: ${isoDate(today)}\nDetail being collected: $slot\nQuestion: $question\nReply: $answer"
+
+    /** History only grows during a run, so each step's input starts with the previous step's. */
+    fun screenInput(today: StayDate, goal: String, history: List<String>, screen: String): String {
+        val steps = if (history.isEmpty()) "Nothing yet." else history.joinToString("\n")
+        return "Today: ${isoDate(today)}\nGoal: $goal\n\nSo far:\n$steps\n\nCurrent screen:\n$screen"
+    }
+
+    /** Token counts from a Responses API reply, for the timing log; empty if it has none. */
+    fun usage(json: String): String = try {
+        val usage = JSONObject(json).optJSONObject("usage")
+        if (usage == null) "" else {
+            val cached = usage.optJSONObject("input_tokens_details")?.optInt("cached_tokens") ?: 0
+            val reasoning = usage.optJSONObject("output_tokens_details")?.optInt("reasoning_tokens") ?: 0
+            "tokens in ${usage.optInt("input_tokens")} (cached $cached), " +
+                "out ${usage.optInt("output_tokens")} (reasoning $reasoning)"
+        }
+    } catch (e: JSONException) {
+        ""
     }
 
     /** The model's text from a Responses API reply. */

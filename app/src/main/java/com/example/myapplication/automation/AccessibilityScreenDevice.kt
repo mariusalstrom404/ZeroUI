@@ -1,6 +1,7 @@
 package com.example.myapplication.automation
 
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.delay
 
 /**
@@ -20,15 +21,21 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
     private var live: Map<Int, AccessibilityNodeInfo> = emptyMap()
 
     override suspend fun read(): Screen {
+        val start = Timing.now()
         val deadline = System.currentTimeMillis() + SETTLE_TIMEOUT_MS
         var screen = snapshot()
+        var settled = false
         while (System.currentTimeMillis() < deadline) {
             delay(SETTLE_POLL_MS)
             val next = snapshot()
-            val settled = next.nodes.isNotEmpty() && next.fingerprint == screen.fingerprint
+            settled = next.nodes.isNotEmpty() && next.fingerprint == screen.fingerprint
             screen = next
             if (settled) break
         }
+        Timing.log(
+            "Screen read: ${Timing.now() - start} ms, ${screen.nodes.size} elements" +
+                if (settled) "" else " (still changing at the time limit)"
+        )
         return screen
     }
 

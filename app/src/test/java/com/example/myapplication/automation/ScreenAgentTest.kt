@@ -39,8 +39,8 @@ class ScreenAgentTest {
     private fun button(id: Int, label: String) = ScreenNode(id, label, tappable = true)
     private val neverAsked = AgentUser { error("should not ask the user") }
 
-    private fun run(device: ScreenDevice, llm: ScreenLlm, user: AgentUser = neverAsked, maxSteps: Int = 15) =
-        runBlocking { ScreenAgent(device, llm, user).run("goal", maxSteps) }
+    private fun run(device: ScreenDevice, llm: ScreenLlm, user: AgentUser = neverAsked) =
+        runBlocking { ScreenAgent(device, llm, user).run("goal") }
 
     @Test
     fun tapsThenFinishes() {
@@ -146,12 +146,12 @@ class ScreenAgentTest {
     }
 
     @Test
-    fun stepsAreCapped() {
-        val screens = Array(30) { screen(button(0, "Page $it")) }
-        val llm = ScreenLlm { _, _, _ -> ScreenAction.Tap(0) }
+    fun longTasksAreNotCutOff() {
+        val screens = Array(41) { screen(button(0, "Page $it")) }
+        val llm = ScriptedLlm(*Array(40) { ScreenAction.Tap(0) })
         val device = FakeDevice(*screens)
-        assertEquals(ScreenAgent.Outcome.OutOfSteps, run(device, llm, maxSteps = 5))
-        assertEquals(5, device.log.size)
+        assertEquals(ScreenAgent.Outcome.Done("finished"), run(device, llm))
+        assertEquals(40, device.log.size)
     }
 
     @Test

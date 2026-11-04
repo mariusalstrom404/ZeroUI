@@ -31,6 +31,7 @@ import com.example.myapplication.automation.InstalledApp
 import com.example.myapplication.automation.AppMatcher
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
+import com.example.myapplication.debug.Timing
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.HotelQuery
@@ -158,6 +159,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     private suspend fun executeCommandChain(commands: List<AppIntent>) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
+        val chainStart = Timing.now()
         try {
             var failure: String? = null
             var question: String? = null
@@ -191,6 +193,7 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
         } finally {
+            Timing.log("Command chain of ${commands.size}: ${Timing.now() - chainStart} ms")
             CommandBridge.postStatus(CommandBridge.Status.FINISHED)
         }
     }
@@ -201,7 +204,7 @@ class MyAccessibilityService : AccessibilityService() {
         lastReply = null
         statusIndicator?.show(Phase.WORKING, describe(intent), progress)
         try {
-            dispatch(intent)
+            Timing.measure("Command ${intent::class.simpleName}") { dispatch(intent) }
         } catch (e: CancellationException) {
             throw e // replaced by a newer command; that one owns the indicator now
         } catch (e: Exception) {
@@ -724,7 +727,7 @@ class MyAccessibilityService : AccessibilityService() {
                     fail("I couldn't find an app named ${intent.app}.")
                 } else {
                     if (pkg != null) delay(APP_START_MS)
-                    reportAgent(runAgent(intent.goal, ScreenAgent.DEFAULT_MAX_STEPS))
+                    reportAgent(runAgent(intent.goal))
                 }
             }
 
@@ -735,24 +738,26 @@ class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun runAgent(goal: String, maxSteps: Int): ScreenAgent.Outcome =
-        ScreenAgent(
-            AccessibilityScreenDevice(automationEngine),
-            OpenAiLlmClient(assets),
-            AgentUser { askByVoice(it) },
-            onProgress = { automationEngine.report(it) }
-        ).run(goal, maxSteps)
+    private suspend fun runAgent(goal: String): ScreenAgent.Outcome =
+        Timing.measure("Screen agent run") {
+            ScreenAgent(
+                AccessibilityScreenDevice(automationEngine),
+                OpenAiLlmClient(assets),
+                AgentUser { askByVoice(it) },
+                onProgress = { automationEngine.report(it) }
+            ).run(goal)
+        }
 
     /** The script couldn't finish an order: the agent carries on from whatever is on screen. */
     private suspend fun recoverOrder(intent: AppIntent.AppOrder, restaurant: String, result: FoodDeliveryAutomation.Result) {
         statusIndicator?.show(Phase.WORKING, "Trying another way", "${intent.item} from $restaurant")
         val goal = "In ${intent.app}, add ${intent.item} from $restaurant to the cart. " +
             "If it has required choices, ask me which ones I want. Stop once it's in the cart."
-        when (val outcome = runAgent(goal, ScreenAgent.RECOVERY_MAX_STEPS)) {
+        when (val outcome = runAgent(goal)) {
             is ScreenAgent.Outcome.Done ->
                 sendReply("${outcome.summary ?: "I added it."} Please review your cart and check out yourself.")
             // The script's own message says more than "the language service is unreachable" here.
-            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp, ScreenAgent.Outcome.OutOfSteps ->
+            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp ->
                 when (result) {
                     FoodDeliveryAutomation.Result.NEEDS_OPTIONS ->
                         ask("${intent.item} needs a few choices (like size or toppings). Please pick them on screen, then tap Add to cart.")
@@ -773,7 +778,6 @@ class MyAccessibilityService : AccessibilityService() {
             ScreenAgent.Outcome.Declined -> sendReply("Okay, I stopped there.")
             ScreenAgent.Outcome.NoAnswer -> ask("I didn't get an answer, so I stopped there.")
             is ScreenAgent.Outcome.GaveUp -> fail("I couldn't finish that${outcome.reason?.let { ": $it" } ?: "."}")
-            ScreenAgent.Outcome.OutOfSteps -> fail("That was taking too many steps, so I stopped. Please check the screen.")
             ScreenAgent.Outcome.Unavailable -> fail("I can't reach my language service right now, so I stopped.")
         }
     }

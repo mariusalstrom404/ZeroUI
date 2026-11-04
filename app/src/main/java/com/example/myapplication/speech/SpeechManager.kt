@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
@@ -24,6 +25,10 @@ class SpeechManager(context: Context) {
     private val recognizer: SpeechRecognizer? =
         if (SpeechRecognizer.isRecognitionAvailable(appContext))
             SpeechRecognizer.createSpeechRecognizer(appContext) else null
+
+    /** When listening started and when the user stopped speaking, for the timing log. */
+    private var listenStart = 0L
+    private var speechEnd = 0L
 
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
@@ -45,13 +50,19 @@ class SpeechManager(context: Context) {
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() { _isListening.value = false }
+            override fun onEndOfSpeech() {
+                speechEnd = Timing.now()
+                _isListening.value = false
+            }
             override fun onError(error: Int) {
                 _isListening.value = false
                 this@SpeechManager.errorListener?.invoke(error)
             }
             override fun onResults(results: Bundle?) {
                 _isListening.value = false
+                val now = Timing.now()
+                val afterSpeech = if (speechEnd >= listenStart) ", ${now - speechEnd} ms of it after speech ended" else ""
+                Timing.log("Speech recognition: ${now - listenStart} ms from the mic opening$afterSpeech")
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) this@SpeechManager.resultListener?.invoke(matches[0])
             }
@@ -69,6 +80,8 @@ class SpeechManager(context: Context) {
             return
         }
         _isListening.value = true
+        listenStart = Timing.now()
+        speechEnd = 0L
         r.startListening(recognizerIntent)
     }
 

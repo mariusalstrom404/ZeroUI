@@ -81,6 +81,9 @@ fun interface AgentUser {
  * Works towards a goal in any app, one validated action at a time: read the screen, get one action
  * from the LLM, check it in code, perform it, see whether the screen changed.
  *
+ * There's no limit on the number of steps. A run ends when the LLM says done or gives up, the
+ * screen stops changing, a guarded step is reached, the user declines, or the user taps stop.
+ *
  * The LLM picks elements by number, so it can't invent one. It never decides what is safe: paying
  * and entering private details end the run, and other consequential taps need the user's yes.
  */
@@ -98,16 +101,15 @@ class ScreenAgent(
         data object Declined : Outcome()
         data object NoAnswer : Outcome()
         data class GaveUp(val reason: String?) : Outcome()
-        data object OutOfSteps : Outcome()
         data object Unavailable : Outcome()
     }
 
-    suspend fun run(goal: String, maxSteps: Int = DEFAULT_MAX_STEPS): Outcome {
+    suspend fun run(goal: String): Outcome {
         val history = mutableListOf<String>()
         var unchanged = 0
         var screen = device.read()
 
-        repeat(maxSteps) {
+        while (true) {
             if (ActionGuard.isPaymentScreen(screen.nodes.mapNotNull { it.label })) {
                 return Outcome.HandedOver("the payment screen")
             }
@@ -130,7 +132,7 @@ class ScreenAgent(
                         // A question changes nothing on screen, and that isn't being stuck.
                         history += "You asked: $question The user answered: $answer"
                         screen = device.read()
-                        return@repeat
+                        continue
                     }
                 }
                 is ScreenAction.Tap -> {
@@ -189,12 +191,9 @@ class ScreenAgent(
             }
             screen = after
         }
-        return Outcome.OutOfSteps
     }
 
-    companion object {
-        const val DEFAULT_MAX_STEPS = 15
-        const val RECOVERY_MAX_STEPS = 10
-        private const val MAX_UNCHANGED = 3
+    private companion object {
+        const val MAX_UNCHANGED = 3
     }
 }

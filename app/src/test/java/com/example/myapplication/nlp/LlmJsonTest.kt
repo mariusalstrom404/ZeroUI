@@ -92,6 +92,43 @@ class LlmJsonTest {
     }
 
     @Test
+    fun requestHasACacheKeyPerKindOfCall() {
+        val request = org.json.JSONObject(LlmJson.request("m", "voice_commands", """{"type":"object"}""", "rules", "hi"))
+        assertEquals("zeroui-voice_commands", request.getString("prompt_cache_key"))
+        assertEquals("rules", request.getString("instructions"))
+    }
+
+    @Test
+    fun inputsCarryWhatChangesBetweenCalls() {
+        val day = StayDate(2026, 11, 4)
+        assertEquals("Today: 2026-11-04\nCommand: turn on the flashlight", LlmJson.commandInput(day, "turn on the flashlight"))
+        assertEquals(
+            "Today: 2026-11-04\nDetail being collected: AMOUNT\nQuestion: How much?\nReply: fifty",
+            LlmJson.answerInput(day, "AMOUNT", "How much?", "fifty")
+        )
+        assertEquals(
+            "Today: 2026-11-04\nGoal: g\n\nSo far:\nNothing yet.\n\nCurrent screen:\nS",
+            LlmJson.screenInput(day, "g", emptyList(), "S")
+        )
+    }
+
+    @Test
+    fun eachScreenStepStartsWithThePreviousOne() {
+        val day = StayDate(2026, 11, 4)
+        val first = LlmJson.screenInput(day, "g", listOf("Tapped [1]."), "screen one")
+        val second = LlmJson.screenInput(day, "g", listOf("Tapped [1].", "Went back."), "screen two")
+        assertTrue(second.startsWith(first.substringBefore("\n\nCurrent screen:")))
+    }
+
+    @Test
+    fun readsTokenUsage() {
+        val reply = """{"usage":{"input_tokens":5000,"input_tokens_details":{"cached_tokens":4864},""" +
+            """"output_tokens":40,"output_tokens_details":{"reasoning_tokens":0}}}"""
+        assertEquals("tokens in 5000 (cached 4864), out 40 (reasoning 0)", LlmJson.usage(reply))
+        assertEquals("", LlmJson.usage("not json"))
+    }
+
+    @Test
     fun readsTextFromAResponse() {
         val reply = """{"output":[{"type":"reasoning"},{"type":"message","content":[{"type":"output_text","text":"{\"commands\":[]}"}]}]}"""
         assertEquals("""{"commands":[]}""", LlmJson.outputText(reply))

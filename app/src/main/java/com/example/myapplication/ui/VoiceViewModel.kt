@@ -14,6 +14,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import com.example.myapplication.Message
+import com.example.myapplication.debug.Timing
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.CommandConversation
@@ -47,7 +48,8 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     val messages: SnapshotStateList<Message> = mutableStateListOf()
 
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
-    private val conversation = CommandConversation(OpenAiLlmClient(app.assets))
+    private val llm = OpenAiLlmClient(app.assets)
+    private val conversation = CommandConversation(llm)
     private var requestJob: Job? = null
 
     /** True while a command is being understood or run by the service. */
@@ -64,6 +66,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     var onAnswered: () -> Unit = {}
 
     init {
+        warmUp()
         loadHistory()
         if (messages.isEmpty()) {
             messages.add(
@@ -131,6 +134,11 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         if (!spoken) speak(text)
     }
 
+    /** Opens the connection to OpenAI now, so the next request doesn't wait for it. */
+    fun warmUp() {
+        scope.launch { llm.warmUp() }
+    }
+
     fun onUserCommand(userInput: String) {
         messages.add(Message(userInput, true))
         // A running automation asked a question; this is its answer, not a new command.
@@ -142,7 +150,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         isProcessing = true
         CommandBridge.showUnderstanding(userInput)
         requestJob = scope.launch {
-            val turn = conversation.handle(userInput)
+            val turn = Timing.measure("Understanding the request") { conversation.handle(userInput) }
             isProcessing = false
             turn.says.forEach { addAssistant(it) }
             run(turn.run)

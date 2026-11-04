@@ -92,7 +92,11 @@ class MainActivity : ComponentActivity() {
                         isListening = speech.isListening.collectAsState().value,
                         isProcessing = viewModel.isProcessing,
                         voiceRequests = voiceRequests,
-                        onStartListening = { speech.startListening() },
+                        onStartListening = {
+                            speech.startListening()
+                            // Done while the user speaks, so the request after it starts on an open connection.
+                            viewModel.warmUp()
+                        },
                         onSend = { viewModel.onUserCommand(it) }
                     )
                 }
