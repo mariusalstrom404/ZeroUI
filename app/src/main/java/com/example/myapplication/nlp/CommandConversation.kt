@@ -27,14 +27,19 @@ class CommandConversation(
     private val ready = mutableListOf<AppIntent>()
     private var lastRun: List<AppIntent> = emptyList()
 
-    suspend fun handle(utterance: String): Turn {
+    suspend fun handle(utterance: String, foregroundApp: String? = null): Turn {
         val says = mutableListOf<String>()
         when (val current = waiting) {
             null -> {
-                val commands = try {
-                    llm.parseCommand(utterance, today())
-                } catch (e: LlmUnavailableException) {
-                    return Turn(listOf(UNAVAILABLE))
+                val fastMatch = FastPathParser.parse(utterance)
+                val commands = if (fastMatch != null) {
+                    fastMatch
+                } else {
+                    try {
+                        llm.parseCommand(utterance, today(), foregroundApp)
+                    } catch (e: LlmUnavailableException) {
+                        return Turn(listOf(UNAVAILABLE))
+                    }
                 }
                 queue.clear()
                 ready.clear()

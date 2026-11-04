@@ -23,6 +23,7 @@
                   "GREETING",
                   "SAVE_HISTORY",
                   "CLEAR_HISTORY",
+                  "VIEW_OPERATION_HISTORY",
                   "REPEAT_LAST",
                   "TAKE_SCREENSHOT",
                   "CHECK_BALANCE",

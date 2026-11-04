@@ -31,8 +31,10 @@ import com.example.myapplication.automation.InstalledApp
 import com.example.myapplication.automation.AppMatcher
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
+import com.example.myapplication.history.OperationHistoryManager
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
+import com.example.myapplication.nlp.CommandConversation
 import com.example.myapplication.nlp.HotelQuery
 import com.example.myapplication.nlp.OpenAiLlmClient
 import com.example.myapplication.nlp.StayDate
@@ -40,6 +42,9 @@ import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
 import com.example.myapplication.speech.Speaker
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import java.util.ArrayDeque
 import java.util.regex.Pattern
 
 class MyAccessibilityService : AccessibilityService() {
@@ -56,11 +61,82 @@ class MyAccessibilityService : AccessibilityService() {
     private var dumpJob: Job? = null
 
     private var statusIndicator: StatusIndicator? = null
+    private val commandQueue = ArrayDeque<AppIntent>()
+    private var lastUserLanguageIsChinese = false
 
     /** How the command currently being processed ended; set by [fail] and [ask]. */
     private enum class Outcome { OK, NEEDS_INPUT, FAILED }
     private var outcome = Outcome.OK
     private var lastReply: String? = null
+
+    private fun isChineseText(text: String?): Boolean {
+        if (text.isNullOrEmpty()) return false
+        return text.any { it in '\u4e00'..'\u9fa5' }
+    }
+
+    private val llmClient by lazy { OpenAiLlmClient(assets) }
+    private val conversation by lazy { CommandConversation(llmClient) }
+
+    fun getActiveForegroundPackage(): String? = automationEngine.finder.activeForegroundPackage()
+
+    fun receiveFeedback(feedbackText: String) {
+        Log.d("NLPControl", "Received active user feedback: $feedbackText")
+        if (isChineseText(feedbackText)) {
+            lastUserLanguageIsChinese = true
+        }
+        val feedbackMsg = if (lastUserLanguageIsChinese) "正在套用反饋: “$feedbackText”" else "Applying feedback: “$feedbackText”"
+        statusIndicator?.show(Phase.WORKING, "Feedback received", feedbackMsg)
+
+        currentJob?.cancel()
+
+        currentJob = serviceScope.launch {
+            try {
+                val turn = conversation.handle(feedbackText, getActiveForegroundPackage())
+                val newIntents = turn.run.filterNot { it is AppIntent.Unknown }
+
+                if (newIntents.isNotEmpty()) {
+                    for (intent in newIntents.reversed()) {
+                        commandQueue.addFirst(intent)
+                    }
+                    val count = newIntents.size
+                    val msg = if (lastUserLanguageIsChinese) {
+                        "收到反饋，正在對當前畫面執行 $count 個更正操作..."
+                    } else {
+                        "Received feedback, executing $count correction(s) on current screen..."
+                    }
+                    sendReply(msg)
+                    executeCommandChain()
+                } else {
+                    val cleanText = feedbackText.trim()
+                    val clicked = performClickOnText(cleanText, timeoutMs = 2000)
+                    if (clicked) {
+                        val msg = if (lastUserLanguageIsChinese) "已點擊畫面上的 “$cleanText”" else "Clicked “$cleanText” on screen."
+                        sendReply(msg)
+                        statusIndicator?.show(Phase.SUCCESS, "Done", msg)
+                    } else {
+                        val typed = automationEngine.typeIntoApp(cleanText, submit = true, packageName = null, timeoutMs = 3000)
+                        if (typed) {
+                            val msg = if (lastUserLanguageIsChinese) "已在當前畫面輸入 “$cleanText”" else "Typed “$cleanText” on screen."
+                            sendReply(msg)
+                            statusIndicator?.show(Phase.SUCCESS, "Done", msg)
+                        } else {
+                            val msg = if (lastUserLanguageIsChinese) {
+                                "收到反饋 “$cleanText”，但在當前畫面上未找到對應的按鈕或輸入框。"
+                            } else {
+                                "Received feedback “$cleanText”, but couldn't find a matching button or input field on screen."
+                            }
+                            sendReply(msg)
+                            statusIndicator?.show(Phase.ERROR, "Feedback Error", msg)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("NLPControl", "Error applying active feedback", e)
+                val msg = if (lastUserLanguageIsChinese) "處理反饋時發生錯誤" else "Error applying feedback."
+                fail(msg)
+            }
+        }
+    }
 
     object DebugConfig {
         const val ENABLE_ACCESSIBILITY_TREE_DUMP = true
@@ -93,8 +169,16 @@ class MyAccessibilityService : AccessibilityService() {
         private val UUID_PATTERN =Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 
+    private val _uiEventSignal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val uiEventSignal: SharedFlow<Unit> get() = _uiEventSignal
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event?.let {
+            if (it.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                it.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+            ) {
+                _uiEventSignal.tryEmit(Unit)
+            }
             Log.e("ZeroUIAutomation", "event=${it.eventType}, package=${it.packageName}, class=${it.className}")
 
             // Our own overlays/dialog change constantly while we work; don't dump the tree for them.
@@ -124,6 +208,8 @@ class MyAccessibilityService : AccessibilityService() {
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
         statusIndicator?.onStop = { stopCurrentCommand() }
+        statusIndicator?.onFeedback = { /* trigger overlay feedback */ }
+        statusIndicator?.onFeedbackSubmit = { feedbackText -> receiveFeedback(feedbackText) }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
     }
@@ -131,11 +217,16 @@ class MyAccessibilityService : AccessibilityService() {
     /** Entry point invoked by [CommandBridge] with commands the UI has understood and confirmed. */
     fun submitCommands(commands: List<AppIntent>) {
         Log.d("NLPControl", "Service starting chain of ${commands.size}")
+        commandQueue.clear()
+        commandQueue.addAll(commands)
         currentJob?.cancel()
-        currentJob = serviceScope.launch { executeCommandChain(commands) }
+        currentJob = serviceScope.launch { executeCommandChain() }
     }
 
     fun showUnderstanding(utterance: String) {
+        if (isChineseText(utterance)) {
+            lastUserLanguageIsChinese = true
+        }
         statusIndicator?.show(Phase.UNDERSTANDING, "Understanding your request…", "“$utterance”")
     }
 
@@ -156,28 +247,54 @@ class MyAccessibilityService : AccessibilityService() {
         sendReply("Okay, I stopped.")
     }
 
-    private suspend fun executeCommandChain(commands: List<AppIntent>) {
+    private suspend fun executeCommandChain() {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
         try {
             var failure: String? = null
             var question: String? = null
-            for ((index, intent) in commands.withIndex()) {
-                val progress = if (commands.size > 1) "Command ${index + 1} of ${commands.size}" else null
+            var stepCount = 0
+
+            while (commandQueue.isNotEmpty()) {
+                val intent = commandQueue.removeFirst()
+                stepCount++
+                val remaining = commandQueue.size
+                val progress = if (remaining > 0 || stepCount > 1) "Step $stepCount (${remaining} remaining)" else null
+
                 processSingleCommand(intent, progress)
+
+                val desc = describe(intent)
+                val statusStr = when (outcome) {
+                    Outcome.OK -> "SUCCESS"
+                    Outcome.FAILED -> "FAILED"
+                    Outcome.NEEDS_INPUT -> "NEEDS_INPUT"
+                }
+                OperationHistoryManager.addRecord(this, desc, desc, statusStr)
+
                 when (outcome) {
                     Outcome.FAILED -> failure = lastReply
                     Outcome.NEEDS_INPUT -> question = lastReply
                     Outcome.OK -> {}
                 }
-                // Later commands may depend on this one, so they don't run on top of a failure.
+
                 if (outcome != Outcome.OK) {
-                    val skipped = commands.size - index - 1
-                    if (skipped > 0) sendReply("I didn't do the $skipped remaining ${if (skipped == 1) "command" else "commands"}.")
+                    val skipped = commandQueue.size
+                    commandQueue.clear()
+                    if (skipped > 0) {
+                        val msg = if (lastUserLanguageIsChinese) {
+                            "未執行剩餘的 $skipped 個操作。"
+                        } else {
+                            "Did not perform remaining $skipped operation(s)."
+                        }
+                        sendReply(msg)
+                    }
                     break
                 }
-                if (index < commands.lastIndex) {
-                    statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${describe(commands[index + 1])}")
-                    delay(4000)
+
+                if (commandQueue.isNotEmpty()) {
+                    val nextLabel = describe(commandQueue.first())
+                    val waitMsg = if (lastUserLanguageIsChinese) "下一步: $nextLabel" else "Next: $nextLabel"
+                    statusIndicator?.show(Phase.WORKING, "Waiting for screen to settle", waitMsg)
+                    delay(3000)
                 }
             }
 
@@ -185,9 +302,13 @@ class MyAccessibilityService : AccessibilityService() {
                 failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
                 question != null -> statusIndicator?.show(Phase.NEEDS_INPUT, "Need more information", question)
                 else -> {
-                    statusIndicator?.show(Phase.SUCCESS, "Done", lastReply)
-                    // Success replies are spoken by sendReply; say something when there wasn't one.
-                    if (lastReply == null) Speaker.speak("Done.", interrupt = false)
+                    val completionMsg = if (lastUserLanguageIsChinese) {
+                        "已完成一系列操作，請問還有其他需要協助的嗎？"
+                    } else {
+                        "Finished sequence of operations. Anything else I can help with?"
+                    }
+                    statusIndicator?.show(Phase.SUCCESS, "Done", completionMsg)
+                    sendReply(completionMsg)
                 }
             }
         } finally {
@@ -231,6 +352,7 @@ class MyAccessibilityService : AccessibilityService() {
         AppIntent.Greeting -> "Saying hello"
         AppIntent.SaveHistory -> "Saving history"
         AppIntent.ClearHistory -> "Clearing history"
+        AppIntent.ViewOperationHistory -> "Showing operation history"
         AppIntent.RepeatLast -> "Repeating your last command"
         AppIntent.TakeScreenshot -> "Taking a screenshot"
         is AppIntent.CameraAction -> "Opening the camera"
@@ -544,7 +666,7 @@ class MyAccessibilityService : AccessibilityService() {
             // Conversation Management
             AppIntent.Greeting -> {
                 sendReply(
-                    "Hi! I'm ZeroUI. You can use me to control your device, navigate, handle banking with NCCUbank, order food, or post on social media. Try saying 'check my balance', 'take a screenshot', or 'repeat'. How can I help?"
+                    "Hi! I'm ZeroUI, your AI voice & automation assistant. You can use me for continuous multi-step tasks, real-time feedback, operation history, food ordering, banking, social media, or system controls. How can I help?"
                 )
             }
 
@@ -554,6 +676,11 @@ class MyAccessibilityService : AccessibilityService() {
 
             AppIntent.ClearHistory -> {
                 sendReply("I've cleared the conversation history.")
+            }
+
+            AppIntent.ViewOperationHistory -> {
+                val summary = OperationHistoryManager.formatHistorySummary(this)
+                sendReply(summary)
             }
 
             // CommandConversation expands a repeat before anything reaches the service.
@@ -738,7 +865,7 @@ class MyAccessibilityService : AccessibilityService() {
     private suspend fun runAgent(goal: String, maxSteps: Int): ScreenAgent.Outcome =
         ScreenAgent(
             AccessibilityScreenDevice(automationEngine),
-            OpenAiLlmClient(assets),
+            llmClient,
             AgentUser { askByVoice(it) },
             onProgress = { automationEngine.report(it) }
         ).run(goal, maxSteps)
@@ -789,11 +916,7 @@ class MyAccessibilityService : AccessibilityService() {
         Speaker.speakAndWait(question)
         val answer = CommandBridge.expectAnswer()
         try {
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    .putExtra("start_voice", true)
-            )
+            statusIndicator?.showInlineInput()
             return withTimeoutOrNull(ANSWER_TIMEOUT_MS) { answer.await() }
                 ?.also { statusIndicator?.show(Phase.WORKING, "Continuing", it) }
         } finally {
@@ -1118,18 +1241,22 @@ class MyAccessibilityService : AccessibilityService() {
                                     Math.abs(e.rawX - itx) < 10 &&
                                     Math.abs(e.rawY - ity) < 10
                                 ) {
-                                    startActivity(
-                                        Intent(
-                                            this@MyAccessibilityService,
-                                            MainActivity::class.java
-                                        ).apply {
-                                            addFlags(
-                                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                                        Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                            )
-                                            putExtra("start_voice", true)
-                                        }
-                                    )
+                                    if (currentJob?.isActive == true) {
+                                        statusIndicator?.showInlineInput()
+                                    } else {
+                                        startActivity(
+                                            Intent(
+                                                this@MyAccessibilityService,
+                                                MainActivity::class.java
+                                            ).apply {
+                                                addFlags(
+                                                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                                                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                                )
+                                                putExtra("start_voice", true)
+                                            }
+                                        )
+                                    }
                                 }
                                 return true
                             }

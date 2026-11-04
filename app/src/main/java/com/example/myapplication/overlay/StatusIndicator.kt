@@ -11,21 +11,22 @@ import android.os.Looper
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import com.example.myapplication.ipc.CommandBridge
 
 /**
- * Floating pill at the bottom of the screen, just above the navigation bar, that tells the user what ZeroUI is doing right now
- * ("Understanding…", "Looking for “Cart”", "Done", errors).
+ * Floating pill that tells the user what ZeroUI is doing right now ("Understanding…", "Looking for “Cart”", "Done", errors).
  *
- * While a command runs the pill shows a stop button, which calls [onStop]. Only then is the pill
- * touchable; otherwise it is NOT_TOUCHABLE. ZeroUI's own taps and swipes pass through it either
- * way, because the engine calls [setPassThrough] around each gesture. The text is a polite live
- * region, so TalkBack users hear status changes too. All methods may be called from any thread.
+ * Supports drag-to-move positioning across the entire screen and keyboard-avoiding inline feedback input over active apps.
  */
 class StatusIndicator(private val context: Context, private val windowManager: WindowManager) {
 
@@ -37,12 +38,17 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         ERROR(0xFFF28B82.toInt(), "!"),
         STOPPED(0xFFBDC1C6.toInt(), "■");
 
-        /** Phases where a command is still running and can be stopped. */
         val stoppable: Boolean get() = symbol == null
     }
 
     /** Called on the main thread when the user taps the stop button. */
     var onStop: (() -> Unit)? = null
+
+    /** Called on the main thread when the user taps the feedback button. */
+    var onFeedback: (() -> Unit)? = null
+
+    /** Called on the main thread when the user submits inline overlay feedback. */
+    var onFeedbackSubmit: ((String) -> Unit)? = null
 
     companion object {
         private const val SUCCESS_HIDE_MS = 3000L
@@ -55,6 +61,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
 
     private val handler = Handler(Looper.getMainLooper())
     private val density = context.resources.displayMetrics.density
+    private val displayMetrics = context.resources.displayMetrics
     private val hideRunnable = Runnable { hide() }
 
     private var root: LinearLayout? = null
@@ -63,13 +70,16 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     private lateinit var titleView: TextView
     private lateinit var detailView: TextView
     private lateinit var stopButton: TextView
+    private lateinit var feedbackButton: TextView
+    private lateinit var feedbackInputRow: LinearLayout
+    private lateinit var feedbackEditText: EditText
+
     private var attached = false
-    /** The stop button is showing, so the pill should take touches. */
     private var stoppable = false
-    /** ZeroUI is dispatching a gesture that must not land on the pill. */
     private var passThrough = false
-    /** Bumped on every show so a fade-out that started earlier doesn't remove a newer status. */
     private var generation = 0
+    private var userHasDragged = false
+    private var savedYBeforeInput = -1
 
     private val params = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
@@ -80,11 +90,12 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
         PixelFormat.TRANSLUCENT
     ).apply {
-        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        y = bottomOffset()
+        gravity = Gravity.TOP or Gravity.START
+        x = (displayMetrics.widthPixels - dp(280)) / 2
+        y = displayMetrics.heightPixels - navigationBarHeight() - dp(80)
+        softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
     }
 
-    /** Shows [phase] with a [title] and optional [detail]. Final phases hide themselves after a few seconds. */
     fun show(phase: Phase, title: String, detail: String? = null): Unit = onMain {
         val view = ensureAttached() ?: return@onMain
         updatePosition(view)
@@ -102,6 +113,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         setDetail(detail)
         stoppable = phase.stoppable
         stopButton.visibility = if (stoppable) View.VISIBLE else View.GONE
+        feedbackButton.visibility = if (stoppable) View.VISIBLE else View.GONE
         applyTouchability()
 
         val hideAfter = when (phase) {
@@ -114,15 +126,10 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         hideAfter?.let { handler.postDelayed(hideRunnable, it) }
     }
 
-    /** Updates only the second line (e.g. the automation step), keeping the current phase and title. */
     fun updateDetail(detail: String?): Unit = onMain {
         if (attached) setDetail(detail)
     }
 
-    /**
-     * While [enabled], the pill ignores touches so a tap or swipe ZeroUI dispatches underneath it
-     * (e.g. a bottom "Add to cart" bar) reaches the app instead of the stop button.
-     */
     fun setPassThrough(enabled: Boolean): Unit = onMain {
         passThrough = enabled
         applyTouchability()
@@ -130,7 +137,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
 
     private fun applyTouchability() {
         val view = root ?: return
-        val touchable = stoppable && !passThrough
+        val touchable = (stoppable || feedbackInputRow.visibility == View.VISIBLE) && !passThrough
         val flags = if (touchable) {
             params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         } else {
@@ -157,7 +164,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         }.start()
     }
 
-    /** Removes the indicator immediately, e.g. so it doesn't appear in a screenshot. */
     fun hideNow(): Unit = onMain {
         handler.removeCallbacks(hideRunnable)
         generation++
@@ -199,8 +205,66 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         attached = false
     }
 
+    fun showInlineInput(): Unit = onMain {
+        val rootContainer = root ?: return@onMain
+        if (feedbackInputRow.visibility != View.VISIBLE) {
+            feedbackInputRow.visibility = View.VISIBLE
+            savedYBeforeInput = params.y
+            val displayHeight = displayMetrics.heightPixels
+            // If the pill is in the lower 65% of the screen, move it up above the soft keyboard
+            if (params.y > displayHeight * 0.35) {
+                params.y = (displayHeight * 0.18).toInt()
+            }
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            applyTouchability()
+            try {
+                windowManager.updateViewLayout(rootContainer, params)
+            } catch (e: Exception) {
+            }
+            feedbackEditText.requestFocus()
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.showSoftInput(feedbackEditText, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun toggleFeedbackInput() {
+        if (feedbackInputRow.visibility == View.VISIBLE) {
+            hideFeedbackInput()
+        } else {
+            showInlineInput()
+        }
+    }
+
+    private fun hideFeedbackInput() {
+        val rootContainer = root ?: return
+        feedbackInputRow.visibility = View.GONE
+        feedbackEditText.setText("")
+        if (savedYBeforeInput != -1) {
+            params.y = savedYBeforeInput
+            savedYBeforeInput = -1
+        }
+        params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        applyTouchability()
+        try {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(feedbackEditText.windowToken, 0)
+            windowManager.updateViewLayout(rootContainer, params)
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun submitInlineFeedback() {
+        val text = feedbackEditText.text?.toString()?.trim().orEmpty()
+        if (text.isNotEmpty()) {
+            hideFeedbackInput()
+            if (!CommandBridge.deliverAnswer(text)) {
+                onFeedbackSubmit?.invoke(text)
+            }
+        }
+    }
+
     private fun buildView(): LinearLayout {
-        val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.72).toInt()
+        val maxTextWidth = (displayMetrics.widthPixels * 0.72).toInt()
 
         spinner = ProgressBar(context).apply {
             isIndeterminate = true
@@ -243,6 +307,26 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
 
+        feedbackButton = TextView(context).apply {
+            text = "💬"
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x33FFFFFF)
+            }
+            contentDescription = "Feedback"
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(8) }
+            setOnClickListener {
+                toggleFeedbackInput()
+                onFeedback?.invoke()
+            }
+        }
+
         stopButton = TextView(context).apply {
             text = "■"
             gravity = Gravity.CENTER
@@ -256,30 +340,106 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             isClickable = true
             isFocusable = true
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(12) }
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(8) }
             setOnClickListener { onStop?.invoke() }
         }
 
-        return LinearLayout(context).apply {
+        val mainPillRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            addView(iconBox)
+            addView(texts)
+            addView(feedbackButton)
+            addView(stopButton)
+        }
+
+        feedbackEditText = EditText(context).apply {
+            hint = "Feedback / 搜尋錯誤或新增操作..."
+            setHintTextColor(0x88FFFFFF.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            background = null
+            maxLines = 2
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val sendFeedbackButton = TextView(context).apply {
+            text = "▶"
+            gravity = Gravity.CENTER
+            setTextColor(0xFF8AB4F8.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setPadding(dp(8), 0, dp(4), 0)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { submitInlineFeedback() }
+        }
+
+        feedbackInputRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(0, dp(8), 0, 0)
+            addView(feedbackEditText)
+            addView(sendFeedbackButton)
+        }
+
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(14), dp(10), dp(18), dp(10))
             background = GradientDrawable().apply {
                 cornerRadius = dp(22).toFloat()
                 setColor(0xEB202124.toInt())
             }
             elevation = dp(6).toFloat()
-            addView(iconBox)
-            addView(texts)
-            addView(stopButton)
+            addView(mainPillRow)
+            addView(feedbackInputRow)
         }
+
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+
+        container.setOnTouchListener { v, event ->
+            if (passThrough) return@setOnTouchListener false
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
+                        userHasDragged = true
+                        params.x = (initialX + dx).coerceIn(0, displayMetrics.widthPixels - v.width.coerceAtLeast(dp(100)))
+                        params.y = (initialY + dy).coerceIn(0, displayMetrics.heightPixels - v.height.coerceAtLeast(dp(50)))
+                        try {
+                            windowManager.updateViewLayout(v, params)
+                        } catch (e: Exception) {
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    v.performClick()
+                    true
+                }
+                else -> false
+            }
+        }
+
+        return container
     }
 
-    /** Re-applies the bottom offset, e.g. after rotation or a navigation-mode change. */
     private fun updatePosition(view: View) {
-        val wanted = bottomOffset()
-        if (params.y != wanted) {
-            params.y = wanted
+        if (!userHasDragged && savedYBeforeInput == -1) {
+            params.x = (displayMetrics.widthPixels - view.width.coerceAtLeast(dp(200))) / 2
+            params.y = displayMetrics.heightPixels - navigationBarHeight() - dp(80)
             try {
                 windowManager.updateViewLayout(view, params)
             } catch (e: Exception) {
@@ -287,19 +447,11 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         }
     }
 
-    /**
-     * Distance from the bottom edge that keeps the pill clear of the navigation bar (3-button bar
-     * or gesture handle). Read from the display's metrics rather than this window's own insets:
-     * once the pill sits above the bar its own bottom inset is 0, which would make it oscillate.
-     */
-    private fun bottomOffset(): Int = navigationBarHeight() + dp(BOTTOM_MARGIN_DP)
-
-    @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
     private fun navigationBarHeight(): Int {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             return windowManager.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(
-                android.view.WindowInsets.Type.navigationBars() or
-                    android.view.WindowInsets.Type.displayCutout()
+                WindowInsets.Type.navigationBars() or
+                    WindowInsets.Type.displayCutout()
             ).bottom
         }
         val id = context.resources.getIdentifier("navigation_bar_height", "dimen", "android")
@@ -307,7 +459,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     }
 
     private fun dp(value: Int): Int = (value * density).toInt()
-
 
     private inline fun onMain(crossinline block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else handler.post { block() }

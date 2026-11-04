@@ -9,7 +9,7 @@ The exception is an app field: give the app's usual name as shown under its icon
 Intents:
 - BATTERY; FLASHLIGHT (enable); VOLUME and BRIGHTNESS (change, level 0-100); TAKE_SCREENSHOT; CAMERA_ACTION (take_photo)
 - GREETING: hello, small talk, "how are you", "what can you do"
-- SAVE_HISTORY and CLEAR_HISTORY: this conversation's history; REPEAT_LAST: do the last command again
+- SAVE_HISTORY, CLEAR_HISTORY, VIEW_OPERATION_HISTORY: history of conversation or operations; REPEAT_LAST: do the last command again
 - NAVIGATE (destination, mode)
 - OPEN_APP (app): only when opening the app is the whole request. When the user names an app and also says what to do in it ("open X and ...", "go to X and ...", "in X, ..."), never return OPEN_APP: return one command for the task with app set to X, which opens the app itself. Searching or typing there is TYPE_TEXT, e.g. "open Google Drive and search for photos" is TYPE_TEXT (text "photos", app "Google Drive", submit true); anything else is APP_TASK, or a more specific intent below if one fits.
 - NCCUbank: CHECK_BALANCE; TRANSFER (amount in whole units, recipient); BANK_HISTORY; TOP_UP

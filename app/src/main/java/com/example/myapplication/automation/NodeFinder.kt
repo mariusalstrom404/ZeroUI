@@ -19,7 +19,7 @@ import android.view.accessibility.AccessibilityWindowInfo
  * - only considers nodes that are visible on screen;
  * - ranks all candidates instead of taking the first substring hit.
  */
-class NodeFinder(private val service: AccessibilityService) {
+class NodeFinder(val service: AccessibilityService) {
 
     companion object {
         private const val COMPOSE_TEST_TAG_KEY = "androidx.compose.ui.semantics.testTag"
@@ -47,6 +47,9 @@ class NodeFinder(private val service: AccessibilityService) {
         }
         return result
     }
+
+    /** Package name of the active top-most application window (excluding ZeroUI itself). */
+    fun activeForegroundPackage(): String? = roots().firstOrNull()?.packageName?.toString()
 
     private fun accepts(root: AccessibilityNodeInfo, own: String, packageName: String?): Boolean {
         val pkg = root.packageName?.toString()

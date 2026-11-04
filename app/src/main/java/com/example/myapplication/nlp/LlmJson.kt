@@ -112,6 +112,7 @@ object LlmJson {
         "GREETING" -> AppIntent.Greeting
         "SAVE_HISTORY" -> AppIntent.SaveHistory
         "CLEAR_HISTORY" -> AppIntent.ClearHistory
+        "VIEW_OPERATION_HISTORY", "OPERATION_HISTORY" -> AppIntent.ViewOperationHistory
         "REPEAT_LAST" -> AppIntent.RepeatLast
         "TAKE_SCREENSHOT" -> AppIntent.TakeScreenshot
         "CAMERA_ACTION" -> AppIntent.CameraAction(o.bool("take_photo") ?: false)

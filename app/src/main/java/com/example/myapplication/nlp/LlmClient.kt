@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 
 /** OpenAI couldn't give a usable result: offline, timed out, not configured or invalid output. */
 class LlmUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -39,7 +40,7 @@ data class LlmAnswer(
 
 interface LlmClient {
     @Throws(LlmUnavailableException::class)
-    suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand>
+    suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String? = null): List<LlmCommand>
 
     /** [slot] names the detail being collected, or "CONFIRMATION" for a yes/no question. */
     @Throws(LlmUnavailableException::class)
@@ -52,6 +53,8 @@ interface LlmClient {
  */
 class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
 
+    private val assetCache = ConcurrentHashMap<String, String>()
+
     override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenAction {
         val instructions = asset("agent_prompt.txt").replace("{today}", LlmJson.isoDate(StayDate.today()))
         val steps = if (history.isEmpty()) "Nothing yet." else history.joinToString("\n")
@@ -59,8 +62,13 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         return LlmJson.screenAction(post("screen_action", "agent_schema.json", instructions, input))
     }
 
-    override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
-        val instructions = asset("command_prompt.txt").replace("{today}", LlmJson.isoDate(today))
+    override suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String?): List<LlmCommand> {
+        val baseInstructions = asset("command_prompt.txt").replace("{today}", LlmJson.isoDate(today))
+        val instructions = if (!foregroundApp.isNullOrBlank()) {
+            "$baseInstructions\n\nActive foreground app currently open on user's screen: $foregroundApp."
+        } else {
+            baseInstructions
+        }
         return LlmJson.commands(post("voice_commands", "command_schema.json", instructions, utterance), today)
     }
 
@@ -77,34 +85,43 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
             if (LlmSecrets.OPENAI_API_KEY.startsWith("PASTE_") || LlmSecrets.OPENAI_MODEL.startsWith("PASTE_")) {
                 throw LlmUnavailableException("LlmSecrets.kt is not filled in")
             }
-            var connection: HttpURLConnection? = null
             try {
                 val body = LlmJson.request(LlmSecrets.OPENAI_MODEL, name, asset(schemaFile), instructions, input)
-                connection = (URL(RESPONSES_URL).openConnection() as HttpURLConnection).apply {
+                val connection = (URL(RESPONSES_URL).openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = CONNECT_TIMEOUT_MS
                     readTimeout = READ_TIMEOUT_MS
                     doOutput = true
                     setRequestProperty("Authorization", "Bearer ${LlmSecrets.OPENAI_API_KEY}")
                     setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Connection", "keep-alive")
                 }
                 connection.outputStream.use { it.write(body.toByteArray()) }
                 val status = connection.responseCode
-                if (status != HttpURLConnection.HTTP_OK) throw LlmUnavailableException("OpenAI returned $status")
-                LlmJson.outputText(connection.inputStream.bufferedReader().use { it.readText() })
+                if (status != HttpURLConnection.HTTP_OK) {
+                    val errText = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                    throw LlmUnavailableException("OpenAI returned $status${if (errText != null) ": $errText" else ""}")
+                }
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                LlmJson.outputText(responseText)
             } catch (e: IOException) {
                 throw LlmUnavailableException("Couldn't reach OpenAI", e)
-            } finally {
-                connection?.disconnect()
             }
         }
 
     private fun asset(file: String): String =
-        assets.open("llm/$file").bufferedReader().use { it.readText() }
+        assetCache.getOrPut(file) {
+            assets.open("llm/$file").bufferedReader().use { it.readText() }
+        }
 
     private companion object {
         const val RESPONSES_URL = "https://api.openai.com/v1/responses"
         const val CONNECT_TIMEOUT_MS = 5000
         const val READ_TIMEOUT_MS = 10000
+
+        init {
+            System.setProperty("http.keepAlive", "true")
+            System.setProperty("http.maxConnections", "10")
+        }
     }
 }

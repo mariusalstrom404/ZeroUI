@@ -16,7 +16,7 @@ class CommandConversationTest {
         var parseCalls = 0
         var answerCalls = 0
 
-        override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
+        override suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String?): List<LlmCommand> {
             parseCalls++
             if (unavailable) throw LlmUnavailableException("down")
             return commands

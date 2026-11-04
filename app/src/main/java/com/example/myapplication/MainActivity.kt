@@ -12,7 +12,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -30,7 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -226,8 +230,11 @@ fun StatusChip(isListening: Boolean, isProcessing: Boolean) {
 
 // ── Chat bubbles ───────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatBubble(message: Message) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val isUser = message.isUser
     val bubbleShape = if (isUser) {
         RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
@@ -245,7 +252,15 @@ fun ChatBubble(message: Message) {
             color = bgColor,
             shape = bubbleShape,
             shadowElevation = if (isUser) 2.dp else 1.dp,
-            modifier = Modifier.widthIn(max = 260.dp)
+            modifier = Modifier
+                .widthIn(max = 260.dp)
+                .combinedClickable(
+                    onLongClick = {
+                        clipboardManager.setText(AnnotatedString(message.text))
+                        Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                    },
+                    onClick = {}
+                )
         ) {
             Text(
                 text = message.text,

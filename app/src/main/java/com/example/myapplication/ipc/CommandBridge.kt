@@ -28,7 +28,11 @@ object CommandBridge {
     private var stopListener: (() -> Boolean)? = null
     private var answer: CompletableDeferred<String>? = null
 
+    private var feedbackListener: ((String) -> Unit)? = null
+
     val isServiceConnected: Boolean get() = service != null
+
+    fun getForegroundApp(): String? = service?.getActiveForegroundPackage()
 
     // --- Service side ---
 
@@ -59,16 +63,30 @@ object CommandBridge {
         return true
     }
 
-    fun setClient(onReply: (String) -> Unit, onStatus: (Status) -> Unit, onStop: () -> Boolean) {
+    /** Delivers active user feedback to the service during operation. Returns false if service not connected. */
+    fun deliverFeedback(text: String): Boolean {
+        val s = service ?: return false
+        s.receiveFeedback(text)
+        return true
+    }
+
+    fun setClient(
+        onReply: (String) -> Unit,
+        onStatus: (Status) -> Unit,
+        onStop: () -> Boolean,
+        onFeedback: ((String) -> Unit)? = null
+    ) {
         replyListener = onReply
         statusListener = onStatus
         stopListener = onStop
+        feedbackListener = onFeedback
     }
 
     fun clearClient() {
         replyListener = null
         statusListener = null
         stopListener = null
+        feedbackListener = null
     }
 
     /** Sends parsed commands to the service, in order. Returns false if the service isn't connected. */

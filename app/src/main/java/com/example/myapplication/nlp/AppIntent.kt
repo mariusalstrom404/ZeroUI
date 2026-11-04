@@ -20,6 +20,7 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
     data object Greeting : AppIntent()
     data object SaveHistory : AppIntent()
     data object ClearHistory : AppIntent()
+    data object ViewOperationHistory : AppIntent()
     data object RepeatLast : AppIntent()
     data object TakeScreenshot : AppIntent()
     data class CameraAction(val takePhoto: Boolean = false) : AppIntent()

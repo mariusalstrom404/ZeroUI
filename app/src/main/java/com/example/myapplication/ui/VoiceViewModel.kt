@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.AndroidViewModel
 import com.example.myapplication.Message
+import com.example.myapplication.history.OperationHistoryManager
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.CommandConversation
@@ -123,11 +124,17 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             onAnswered()
             return
         }
+        // If an operation is currently processing in the background, deliver as active feedback.
+        if (isProcessing && CommandBridge.deliverFeedback(userInput)) {
+            addAssistant("Received feedback: \"$userInput\"", spoken = false)
+            return
+        }
         requestJob?.cancel()
         isProcessing = true
         CommandBridge.showUnderstanding(userInput)
         requestJob = scope.launch {
-            val turn = conversation.handle(userInput)
+            val foregroundApp = CommandBridge.getForegroundApp()
+            val turn = conversation.handle(userInput, foregroundApp)
             isProcessing = false
             turn.says.forEach { addAssistant(it) }
             run(turn.run)
@@ -156,22 +163,19 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun isLocal(intent: AppIntent): Boolean =
         intent === AppIntent.Greeting || intent === AppIntent.SaveHistory ||
-            intent === AppIntent.ClearHistory || intent === AppIntent.Battery
+            intent === AppIntent.ClearHistory || intent === AppIntent.ViewOperationHistory ||
+            intent === AppIntent.Battery
 
     private fun runLocally(intent: AppIntent) {
         when (intent) {
             AppIntent.Greeting -> {
-                addAssistant("Hi! I'm ZeroUI, your voice assistant. Here is what I can do for you:\n\n" +
-                        " Device Control: 'turn on flashlight', 'volume up', 'set brightness to 50%', or 'check battery'.\n" +
-                        " Screenshot & Photo: 'take a screenshot', 'open camera', or 'take a photo'.\n" +
-                        " Navigation: 'navigate to Central Park' or 'take me to the airport'.\n" +
-                        " Banking (NCCUbank): 'check my balance', 'transfer 50 to Bob', or 'show my transaction history'.\n" +
-                        " Food (FoodGorilla): 'search for pizza on FoodGorilla' or 'open my cart'.\n" +
-                        " Any app: 'search for pizza on Foodpanda' or 'type hello'.\n" +
-                        " Delivery apps: 'order Hawaiian Pizza from Pizza Hut on Foodpanda' (adds it to your cart).\n" +
-                        " Social (Throats): 'post Hello World to Throats'.\n" +
-                        " History: 'save history' or 'clear history'.\n" +
-                        " Repeat: 'repeat' or 'one more time'.\n\n" +
+                addAssistant("Hi! I'm ZeroUI, your AI voice & automation assistant. Here is what I can do:\n\n" +
+                        " Continuous Operations: Execute multi-step tasks seamlessly in one go.\n" +
+                        " Real-time Active Feedback: Tap 💬 on the floating status bar during execution to correct searches or add operations on the fly.\n" +
+                        " Message Copying: Long-press any chat bubble to copy text.\n" +
+                        " Operation History: Say 'show operation history' to review past actions, or 'clear history'.\n" +
+                        " App Automation: Bookings (Booking.com), Food delivery (FoodGorilla, Foodpanda), Banking (NCCUbank), Social (Throats).\n" +
+                        " Device Control: Flashlight, Volume, Brightness, Screenshot, Camera, Navigation, or Battery.\n\n" +
                         "How can I help you today?")
             }
             AppIntent.SaveHistory -> {
@@ -180,6 +184,11 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             }
             AppIntent.ClearHistory -> {
                 clearHistory()
+                OperationHistoryManager.clearHistory(getApplication())
+            }
+            AppIntent.ViewOperationHistory -> {
+                val summary = OperationHistoryManager.formatHistorySummary(getApplication())
+                addAssistant(summary)
             }
             AppIntent.Battery -> {
                 val bm = getApplication<Application>()

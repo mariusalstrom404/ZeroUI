@@ -10,8 +10,11 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.myapplication.MyAccessibilityService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -195,12 +198,23 @@ class AutomationEngine(private val service: AccessibilityService) {
                 }
             }
 
-            delay(POLL_INTERVAL)
+            awaitNextUiChange(POLL_INTERVAL)
         }
 
         Log.e(LOG, "[FIND] TIMEOUT target=$selector, dumping tree for debug:")
         finder.roots(packageName).forEach { logNodeTree(it, 0) }
         return null
+    }
+
+    private suspend fun awaitNextUiChange(maxWaitMs: Long = POLL_INTERVAL) {
+        val s = finder.service
+        if (s is MyAccessibilityService) {
+            withTimeoutOrNull(maxWaitMs) {
+                s.uiEventSignal.first()
+            }
+        } else {
+            delay(maxWaitMs)
+        }
     }
 
     private fun showOnScreen(node: AccessibilityNodeInfo): Boolean {
