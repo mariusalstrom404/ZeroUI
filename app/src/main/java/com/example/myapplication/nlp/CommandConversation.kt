@@ -13,8 +13,15 @@ class CommandConversation(
     private val today: () -> StayDate = { StayDate.today() }
 ) {
 
-    /** What to do for one utterance: say [says] in order, then run [run] in order. */
-    data class Turn(val says: List<String> = emptyList(), val run: List<AppIntent> = emptyList())
+    /**
+     * What to do for one utterance: say [says] in order, then run [run] in order. [choices] are
+     * answers to the last thing said that the user can tap instead of saying.
+     */
+    data class Turn(
+        val says: List<String> = emptyList(),
+        val run: List<AppIntent> = emptyList(),
+        val choices: List<String> = emptyList()
+    )
 
     private sealed class Waiting {
         data class Detail(val command: LlmCommand, val slot: FollowUpSlot, val question: String) : Waiting()
@@ -49,7 +56,8 @@ class CommandConversation(
 
     /** Works through the queue until a command needs the user, or everything is ready to run. */
     private fun advance(says: MutableList<String>): Turn {
-        if (waiting != null) return Turn(says)
+        // Still waiting, e.g. an answer wasn't understood and the question is asked again.
+        if (waiting != null) return Turn(says, choices = waitingChoices())
         while (queue.isNotEmpty()) {
             val command = queue.removeFirst()
             val intent = command.intent
@@ -69,13 +77,13 @@ class CommandConversation(
                     val question = command.questions[slot] ?: slot.defaultQuestion()
                     waiting = Waiting.Detail(command, slot, question)
                     says += question
-                    return Turn(says)
+                    return Turn(says, choices = choicesFor(slot))
                 }
                 intent.requiresConfirmation -> {
                     val question = confirmationPrompt(intent)
                     waiting = Waiting.Confirm(intent, question)
                     says += question
-                    return Turn(says)
+                    return Turn(says, choices = CONFIRM_CHOICES)
                 }
                 else -> ready += intent
             }
@@ -157,6 +165,17 @@ class CommandConversation(
         }
     }
 
+    private fun waitingChoices(): List<String> = when (val current = waiting) {
+        is Waiting.Detail -> choicesFor(current.slot)
+        is Waiting.Confirm -> CONFIRM_CHOICES
+        else -> emptyList()
+    }
+
+    private fun choicesFor(slot: FollowUpSlot): List<String> = when (slot) {
+        FollowUpSlot.MODE -> listOf("Bus", "Walking", "Driving")
+        else -> emptyList()
+    }
+
     private fun cancelWaiting(says: MutableList<String>) {
         waiting = null
         says += CANCELLED
@@ -181,6 +200,7 @@ class CommandConversation(
 
     private companion object {
         const val CONFIRMATION = "CONFIRMATION"
+        val CONFIRM_CHOICES = listOf("Confirm", "Cancel")
         const val CANCELLED = "Okay, I've cancelled that."
         const val UNAVAILABLE = "I can't reach my language service right now. Please check your connection and try again."
     }

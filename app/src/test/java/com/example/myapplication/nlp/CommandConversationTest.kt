@@ -64,6 +64,23 @@ class CommandConversationTest {
     }
 
     @Test
+    fun confirmationOffersButtons() {
+        commands(transfer)
+        assertEquals(listOf("Confirm", "Cancel"), say("transfer 50 to Bob").choices)
+        // Tapping "Confirm" sends that word, which must count as a yes.
+        assertEquals(listOf<AppIntent>(transfer), say("Confirm").run)
+    }
+
+    @Test
+    fun cancellingAConfirmationRunsNothing() {
+        commands(transfer)
+        say("transfer 50 to Bob")
+        val reply = say("Cancel")
+        assertTrue(reply.run.isEmpty())
+        assertTrue(reply.choices.isEmpty())
+    }
+
+    @Test
     fun chainedTransferIsConfirmedBeforeAnythingRuns() {
         commands(AppIntent.CheckBalance, transfer)
         assertTrue(say("check my balance and transfer 50 to Bob").run.isEmpty())

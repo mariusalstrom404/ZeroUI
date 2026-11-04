@@ -92,6 +92,43 @@ class LlmJsonTest {
     }
 
     @Test
+    fun requestHasACacheKeyPerKindOfCall() {
+        val request = org.json.JSONObject(LlmJson.request("m", "voice_commands", """{"type":"object"}""", "rules", "hi"))
+        assertEquals("zeroui-voice_commands", request.getString("prompt_cache_key"))
+        assertEquals("rules", request.getString("instructions"))
+    }
+
+    @Test
+    fun inputsCarryWhatChangesBetweenCalls() {
+        val day = StayDate(2026, 11, 4)
+        assertEquals("Today: 2026-11-04\nCommand: turn on the flashlight", LlmJson.commandInput(day, "turn on the flashlight"))
+        assertEquals(
+            "Today: 2026-11-04\nDetail being collected: AMOUNT\nQuestion: How much?\nReply: fifty",
+            LlmJson.answerInput(day, "AMOUNT", "How much?", "fifty")
+        )
+        assertEquals(
+            "Today: 2026-11-04\nGoal: g\n\nSo far:\nNothing yet.\n\nCurrent screen:\nS",
+            LlmJson.screenInput(day, "g", emptyList(), "S")
+        )
+    }
+
+    @Test
+    fun eachScreenStepStartsWithThePreviousOne() {
+        val day = StayDate(2026, 11, 4)
+        val first = LlmJson.screenInput(day, "g", listOf("Tapped [1]."), "screen one")
+        val second = LlmJson.screenInput(day, "g", listOf("Tapped [1].", "Went back."), "screen two")
+        assertTrue(second.startsWith(first.substringBefore("\n\nCurrent screen:")))
+    }
+
+    @Test
+    fun readsTokenUsage() {
+        val reply = """{"usage":{"input_tokens":5000,"input_tokens_details":{"cached_tokens":4864},""" +
+            """"output_tokens":40,"output_tokens_details":{"reasoning_tokens":0}}}"""
+        assertEquals("tokens in 5000 (cached 4864), out 40 (reasoning 0)", LlmJson.usage(reply))
+        assertEquals("", LlmJson.usage("not json"))
+    }
+
+    @Test
     fun readsTextFromAResponse() {
         val reply = """{"output":[{"type":"reasoning"},{"type":"message","content":[{"type":"output_text","text":"{\"commands\":[]}"}]}]}"""
         assertEquals("""{"commands":[]}""", LlmJson.outputText(reply))
@@ -164,6 +201,49 @@ class LlmJsonTest {
             ScreenAction.Ask("Small or large?"),
             LlmJson.screenAction("""{"action":"ask_user","node":null,"text":null,"submit":false,"say":"Small or large?"}""")
         )
+    }
+
+    @Test
+    fun readsChoicesOfAQuestion() {
+        val json = """{"action":"ask_user","node":null,"text":null,"submit":false,"say":"Which size?",""" +
+            """"choices":["Small"," Large ","","Small"],"then":[]}"""
+        assertEquals(ScreenAction.Ask("Which size?", listOf("Small", "Large")), LlmJson.screenAction(json))
+    }
+
+    @Test
+    fun readsPlannedFollowUps() {
+        val json = """{"action":"tap","node":1,"text":null,"submit":false,"say":null,"choices":[],"then":[""" +
+            """{"action":"type","node":4,"text":"pizza","submit":true},""" +
+            """{"action":"done","node":0,"text":null,"submit":false},""" +
+            """{"action":"tap","node":5,"text":null,"submit":false}]}"""
+        val turn = LlmJson.screenTurn(json)
+        assertEquals(ScreenAction.Tap(1), turn.action)
+        // Only taps and typing can follow.
+        assertEquals(listOf(ScreenAction.Type(4, "pizza", true), ScreenAction.Tap(5)), turn.then)
+    }
+
+    @Test
+    fun nothingFollowsAQuestionOrTheEnd() {
+        val json = """{"action":"ask_user","node":null,"text":null,"submit":false,"say":"Which?","choices":[],""" +
+            """"then":[{"action":"tap","node":5,"text":null,"submit":false}]}"""
+        assertTrue(LlmJson.screenTurn(json).then.isEmpty())
+    }
+
+    @Test
+    fun followUpsAreCapped() {
+        val step = """{"action":"tap","node":5,"text":null,"submit":false}"""
+        val json = """{"action":"tap","node":1,"text":null,"submit":false,"say":null,"choices":[],""" +
+            """"then":[${List(6) { step }.joinToString(",")}]}"""
+        assertEquals(3, LlmJson.screenTurn(json).then.size)
+    }
+
+    @Test
+    fun requestAsksForReasoningEffortOnlyWhenGiven() {
+        val schema = """{"type":"object"}"""
+        val withEffort = org.json.JSONObject(LlmJson.request("m", "n", schema, "i", "x", "low"))
+        assertEquals("low", withEffort.getJSONObject("reasoning").getString("effort"))
+        val without = org.json.JSONObject(LlmJson.request("m", "n", schema, "i", "x"))
+        assertTrue(!without.has("reasoning"))
     }
 
     @Test

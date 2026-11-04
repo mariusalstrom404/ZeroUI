@@ -1,6 +1,7 @@
 package com.example.myapplication.nlp
 
 import com.example.myapplication.automation.ScreenAction
+import com.example.myapplication.automation.ScreenTurn
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -20,8 +21,19 @@ object LlmJson {
     fun isoDate(date: StayDate): String =
         String.format(Locale.ROOT, "%04d-%02d-%02d", date.year, date.month, date.day)
 
-    /** A Responses API request for strict JSON. `store: false` keeps it out of OpenAI's stored responses. */
-    fun request(model: String, name: String, schema: String, instructions: String, input: String): String {
+    /**
+     * A Responses API request for strict JSON. `store: false` keeps it out of OpenAI's stored responses.
+     * [reasoningEffort], when given, caps how long a reasoning model thinks before answering; these
+     * are short, well-specified tasks where the default effort mostly adds latency.
+     */
+    fun request(
+        model: String,
+        name: String,
+        schema: String,
+        instructions: String,
+        input: String,
+        reasoningEffort: String? = null
+    ): String {
         val format = JSONObject()
             .put("type", "json_schema")
             .put("strict", true)
@@ -30,10 +42,41 @@ object LlmJson {
         return JSONObject()
             .put("model", model)
             .put("store", false)
+            // Calls of one kind share a prompt start, so route them to the same cache.
+            .put("prompt_cache_key", "zeroui-$name")
             .put("instructions", instructions)
             .put("input", input)
             .put("text", JSONObject().put("format", format))
+            .apply { if (reasoningEffort != null) put("reasoning", JSONObject().put("effort", reasoningEffort)) }
             .toString()
+    }
+
+    // Inputs put what changes between calls last; each prompt's instructions stay the same for
+    // every call, so OpenAI can reuse their processing (see OpenAiLlmClient).
+
+    fun commandInput(today: StayDate, utterance: String): String =
+        "Today: ${isoDate(today)}\nCommand: $utterance"
+
+    fun answerInput(today: StayDate, slot: String, question: String, answer: String): String =
+        "Today: ${isoDate(today)}\nDetail being collected: $slot\nQuestion: $question\nReply: $answer"
+
+    /** History only grows during a run, so each step's input starts with the previous step's. */
+    fun screenInput(today: StayDate, goal: String, history: List<String>, screen: String): String {
+        val steps = if (history.isEmpty()) "Nothing yet." else history.joinToString("\n")
+        return "Today: ${isoDate(today)}\nGoal: $goal\n\nSo far:\n$steps\n\nCurrent screen:\n$screen"
+    }
+
+    /** Token counts from a Responses API reply, for the timing log; empty if it has none. */
+    fun usage(json: String): String = try {
+        val usage = JSONObject(json).optJSONObject("usage")
+        if (usage == null) "" else {
+            val cached = usage.optJSONObject("input_tokens_details")?.optInt("cached_tokens") ?: 0
+            val reasoning = usage.optJSONObject("output_tokens_details")?.optInt("reasoning_tokens") ?: 0
+            "tokens in ${usage.optInt("input_tokens")} (cached $cached), " +
+                "out ${usage.optInt("output_tokens")} (reasoning $reasoning)"
+        }
+    } catch (e: JSONException) {
+        ""
     }
 
     /** The model's text from a Responses API reply. */
@@ -139,20 +182,51 @@ object LlmJson {
 
     /** One action of the screen agent. Whether its element exists is checked by [ScreenAgent]. */
     @Throws(LlmUnavailableException::class)
-    fun screenAction(json: String): ScreenAction = readJson(json) { o ->
+    fun screenAction(json: String): ScreenAction = screenTurn(json).action
+
+    /**
+     * The agent's action plus the taps and typing it planned right after it on the same screen.
+     * Follow-ups are capped at [MAX_FOLLOW_UPS]; unusable ones are dropped, never guessed at.
+     */
+    @Throws(LlmUnavailableException::class)
+    fun screenTurn(json: String): ScreenTurn = readJson(json) { o ->
+        val action = action(o) ?: throw LlmUnavailableException("Unknown screen action")
+        val then = o.optJSONArray("then") ?: JSONArray()
+        val followUps = List(then.length()) { then.optJSONObject(it) }
+            .mapNotNull { step -> step?.let { action(it) } }
+            .filter { it is ScreenAction.Tap || it is ScreenAction.Type }
+            .take(MAX_FOLLOW_UPS)
+        // Nothing can follow a step that ends the turn or waits for the user.
+        val ends = action !is ScreenAction.Tap && action !is ScreenAction.Type
+        ScreenTurn(action, if (ends) emptyList() else followUps)
+    }
+
+    private const val MAX_FOLLOW_UPS = 3
+    private const val MAX_CHOICES = 6
+
+    private fun action(o: JSONObject): ScreenAction? {
         val node = o.count("node", 0..Int.MAX_VALUE)
-        when (o.getString("action")) {
+        return when (o.optString("action")) {
             "tap" -> ScreenAction.Tap(node)
             "type" -> ScreenAction.Type(node, o.text("text"), o.bool("submit") ?: false)
             "scroll_down" -> ScreenAction.ScrollDown
             "scroll_up" -> ScreenAction.ScrollUp
             "back" -> ScreenAction.Back
             "wait" -> ScreenAction.Wait
-            "ask_user" -> ScreenAction.Ask(o.text("say"))
+            "ask_user" -> ScreenAction.Ask(o.text("say"), o.choices())
             "done" -> ScreenAction.Done(o.text("say"))
             "give_up" -> ScreenAction.GiveUp(o.text("say"))
-            else -> throw LlmUnavailableException("Unknown screen action")
+            else -> null
         }
+    }
+
+    /** Short answers the user can tap instead of saying them. */
+    private fun JSONObject.choices(): List<String> {
+        val array = optJSONArray("choices") ?: return emptyList()
+        return List(array.length()) { array.optString(it).trim() }
+            .filter { it.isNotEmpty() && it.length <= 60 }
+            .distinct()
+            .take(MAX_CHOICES)
     }
 
     /** The service reads a FoodGorilla order as "item from restaurant". */

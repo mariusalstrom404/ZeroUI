@@ -6,7 +6,9 @@
     "node",
     "text",
     "submit",
-    "say"
+    "say",
+    "choices",
+    "then"
   ],
   "properties": {
     "action": {
@@ -43,6 +45,46 @@
         "string",
         "null"
       ]
+    },
+    "choices": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "then": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action",
+          "node",
+          "text",
+          "submit"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "tap",
+              "type"
+            ]
+          },
+          "node": {
+            "type": "integer"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submit": {
+            "type": "boolean"
+          }
+        }
+      }
     }
   }
 }

@@ -1,5 +1,5 @@
 The ZeroUI voice assistant asked the user a question and could not understand the reply with its own rules.
-Today is {today}. The detail being collected is {slot}.
+The input gives today's date, the detail being collected, the question and the reply.
 
 Use status "cancel" if the user wants to drop the request, and "unclear" if the reply does not answer the question. Never guess.
 - CONFIRMATION: "confirm" only if the user clearly agrees to the action in the question; otherwise "cancel" or "unclear".

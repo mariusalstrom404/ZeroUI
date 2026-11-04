@@ -8,8 +8,11 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
+import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlin.coroutines.resume
@@ -22,6 +25,10 @@ class AutomationEngine(private val service: AccessibilityService) {
         private const val LOG = "ZeroUIAutomation"
         private const val DEFAULT_TIMEOUT = 10000L
         private const val POLL_INTERVAL = 400L
+        private const val SETTLE_POLL_MS = 100L
+        private const val SYSTEM_UI = "com.android.systemui"
+        private const val PROGRESS_BAR = "android.widget.ProgressBar"
+        private val LOADING_LABEL = Regex("^(loading|please wait|載入中|加載中|正在載入|正在加载)", RegexOption.IGNORE_CASE)
         private const val SCROLL_MAX_RETRIES = 8
         /**
          * How long a screen gets to populate before we start scrolling to look for an element.
@@ -34,6 +41,8 @@ class AutomationEngine(private val service: AccessibilityService) {
         private const val MAX_ENTRY_ATTEMPTS = 3
         /** How long a tapped search entry gets to open its text field before the next is tried. */
         private const val ENTRY_OPEN_MS = 2500L
+        /** How long a quick typing check looks for the text before falling back to pasting. */
+        private const val QUICK_VERIFY_MS = 1000L
 
         /** Promo/permission/sign-in popups that cover real apps after launch or on new screens. */
         private val DISMISS = listOf(
@@ -143,6 +152,74 @@ class AutomationEngine(private val service: AccessibilityService) {
      * With [scrollIfNotFound], once the screen has had time to settle it scrolls the main list
      * forward, and back up again if the end is reached first.
      */
+    /** When an app other than ZeroUI and the status bar last changed on screen, in elapsed-realtime ms. */
+    @Volatile
+    private var lastScreenChange = 0L
+
+    /** When an app other than ZeroUI last changed on screen (elapsed-realtime ms); 0 if never. */
+    val lastScreenChangeAt: Long get() = lastScreenChange
+
+    /**
+     * Waits until [packageName] is the app in front, for up to [timeoutMs]. Returns false if it
+     * didn't get there in time. Replaces a fixed wait after launching an app.
+     */
+    suspend fun waitForApp(packageName: String, timeoutMs: Long = 5000): Boolean {
+        val start = SystemClock.elapsedRealtime()
+        while (SystemClock.elapsedRealtime() - start < timeoutMs) {
+            if (finder.roots().firstOrNull()?.packageName?.toString() == packageName) {
+                Timing.log("App $packageName in front after ${SystemClock.elapsedRealtime() - start} ms")
+                return true
+            }
+            delay(SETTLE_POLL_MS)
+        }
+        Timing.log("App $packageName not in front after $timeoutMs ms")
+        return false
+    }
+
+    /** Called with every accessibility event; window and content changes count as the screen changing. */
+    fun onScreenEvent(event: AccessibilityEvent) {
+        val pkg = event.packageName?.toString()
+        // ZeroUI's own overlay changes while it waits, and the status bar clock never stops.
+        if (pkg == service.packageName || pkg == SYSTEM_UI) return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        ) {
+            lastScreenChange = SystemClock.elapsedRealtime()
+        }
+    }
+
+    /**
+     * Waits until the app on screen has finished loading, as decided by [rule]: often well under
+     * a second, longer while a loading indicator shows. Returns false if it gave up waiting.
+     */
+    suspend fun waitForScreenToSettle(rule: SettleRule = SettleRule()): Boolean {
+        val start = SystemClock.elapsedRealtime()
+        while (true) {
+            val now = SystemClock.elapsedRealtime()
+            val state = rule.check(now - start, now - maxOf(start, lastScreenChange)) { isLoading() }
+            if (state != SettleRule.State.WAIT) {
+                Timing.log(
+                    "Screen settle: ${SystemClock.elapsedRealtime() - start} ms" +
+                        if (state == SettleRule.State.SETTLED) "" else " (gave up waiting)"
+                )
+                return state == SettleRule.State.SETTLED
+            }
+            delay(SETTLE_POLL_MS)
+        }
+    }
+
+    /** A visible spinner or a "Loading" label in the app on screen. */
+    fun isLoading(): Boolean {
+        val root = finder.roots().firstOrNull() ?: return false
+        return finder.flatten(root).any { node ->
+            if (!node.isVisibleToUser) return@any false
+            // A determinate bar (with a range) is often just a progress display, not a load.
+            val spinner = node.className?.toString() == PROGRESS_BAR && node.rangeInfo == null
+            val label = (node.text ?: node.contentDescription)?.toString()?.trim()
+            spinner || (label != null && LOADING_LABEL.containsMatchIn(label))
+        }
+    }
+
     suspend fun waitForElement(
         selector: Selector?,
         timeoutMs: Long = DEFAULT_TIMEOUT,
@@ -250,9 +327,10 @@ class AutomationEngine(private val service: AccessibilityService) {
     /** Taps [node] (via its clickable ancestor when it has a safe one). */
     suspend fun click(node: AccessibilityNodeInfo): Boolean = performClick(node, finder.clickTarget(node))
 
-    suspend fun back() {
+    /** With [settle] false the caller waits for the screen itself (the screen agent does). */
+    suspend fun back(settle: Boolean = true) {
         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-        delay(800)
+        if (settle) delay(800)
     }
 
     /** Closes a promo or permission popup if one is showing. Exact matches only, short wait. */
@@ -478,12 +556,16 @@ class AutomationEngine(private val service: AccessibilityService) {
     }
 
     /** Types into a field the screen agent chose. */
-    suspend fun typeIntoNode(node: AccessibilityNodeInfo, text: String, submit: Boolean): Boolean {
+    /**
+     * Types into [node]. With [settle] false the fixed waits are left out and the text is checked
+     * for only briefly: the caller reads the screen afterwards and waits for it itself.
+     */
+    suspend fun typeIntoNode(node: AccessibilityNodeInfo, text: String, submit: Boolean, settle: Boolean = true): Boolean {
         val packageName = node.packageName?.toString()
-        val field = enterText(node, text, packageName) { finder.focusedEditable(packageName) } ?: return false
+        val field = enterText(node, text, packageName, quick = !settle) { finder.focusedEditable(packageName) } ?: return false
         if (submit) {
             pressImeEnter(finder.focusedEditable(packageName) ?: field)
-            delay(800)
+            if (settle) delay(800)
         }
         return true
     }
@@ -496,6 +578,7 @@ class AutomationEngine(private val service: AccessibilityService) {
         node: AccessibilityNodeInfo,
         text: String,
         packageName: String?,
+        quick: Boolean = false,
         refind: () -> AccessibilityNodeInfo?
     ): AccessibilityNodeInfo? {
         report("Typing “$text”")
@@ -523,11 +606,12 @@ class AutomationEngine(private val service: AccessibilityService) {
         }
 
         if (actionResult) {
-            // Wait for UI to update
-            delay(800)
+            // Wait for UI to update; a quick check starts looking straight away instead.
+            if (!quick) delay(800)
 
             val startTime = System.currentTimeMillis()
-            while (System.currentTimeMillis() - startTime < 3000) {
+            val verifyMs = if (quick) QUICK_VERIFY_MS else 3000L
+            while (System.currentTimeMillis() - startTime < verifyMs) {
                 val freshText = if (field.refresh()) field.text?.toString() ?: "" else ""
                 Log.e(LOG, "[INPUT] freshText=$freshText")
 
@@ -590,28 +674,28 @@ class AutomationEngine(private val service: AccessibilityService) {
      * Scrolls the main list of the target app's top-most window.
      * Returns false when the list can't scroll further in that direction.
      */
-    suspend fun scroll(down: Boolean, packageName: String? = targetPackage): Boolean {
+    suspend fun scroll(down: Boolean, packageName: String? = targetPackage, settle: Boolean = true): Boolean {
         val container = finder.scrollContainer(packageName)
-        if (container != null) return scroll(container, down)
+        if (container != null) return scroll(container, down, settle)
 
         // No scrollable node exposed: swipe inside the app's window (never over ZeroUI's).
         val root = finder.roots(packageName).firstOrNull() ?: return false
-        return dispatchScrollGesture(down, finder.boundsOf(root))
+        return dispatchScrollGesture(down, finder.boundsOf(root), settle)
     }
 
     /** Scrolls [container] itself, e.g. a list nested inside a pager that [scroll] would pick instead. */
-    suspend fun scroll(container: AccessibilityNodeInfo, down: Boolean): Boolean {
+    suspend fun scroll(container: AccessibilityNodeInfo, down: Boolean, settle: Boolean = true): Boolean {
         val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
         // Lists only offer the action while they can still move that way.
         if (container.actionList.none { it.id == action }) return false
         if (container.performAction(action)) {
-            delay(800)
+            if (settle) delay(800)
             return true
         }
-        return dispatchScrollGesture(down, finder.boundsOf(container))
+        return dispatchScrollGesture(down, finder.boundsOf(container), settle)
     }
 
-    private suspend fun dispatchScrollGesture(down: Boolean, area: Rect): Boolean {
+    private suspend fun dispatchScrollGesture(down: Boolean, area: Rect, settle: Boolean = true): Boolean {
         if (area.isEmpty) return false
         val x = area.centerX().toFloat()
         val top = area.top + area.height() * 0.25f
@@ -626,7 +710,7 @@ class AutomationEngine(private val service: AccessibilityService) {
             .build()
 
         val dispatched = dispatch(gesture)
-        if (dispatched) delay(800)
+        if (dispatched && settle) delay(800)
         return dispatched
     }
 
