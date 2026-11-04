@@ -204,6 +204,49 @@ class LlmJsonTest {
     }
 
     @Test
+    fun readsChoicesOfAQuestion() {
+        val json = """{"action":"ask_user","node":null,"text":null,"submit":false,"say":"Which size?",""" +
+            """"choices":["Small"," Large ","","Small"],"then":[]}"""
+        assertEquals(ScreenAction.Ask("Which size?", listOf("Small", "Large")), LlmJson.screenAction(json))
+    }
+
+    @Test
+    fun readsPlannedFollowUps() {
+        val json = """{"action":"tap","node":1,"text":null,"submit":false,"say":null,"choices":[],"then":[""" +
+            """{"action":"type","node":4,"text":"pizza","submit":true},""" +
+            """{"action":"done","node":0,"text":null,"submit":false},""" +
+            """{"action":"tap","node":5,"text":null,"submit":false}]}"""
+        val turn = LlmJson.screenTurn(json)
+        assertEquals(ScreenAction.Tap(1), turn.action)
+        // Only taps and typing can follow.
+        assertEquals(listOf(ScreenAction.Type(4, "pizza", true), ScreenAction.Tap(5)), turn.then)
+    }
+
+    @Test
+    fun nothingFollowsAQuestionOrTheEnd() {
+        val json = """{"action":"ask_user","node":null,"text":null,"submit":false,"say":"Which?","choices":[],""" +
+            """"then":[{"action":"tap","node":5,"text":null,"submit":false}]}"""
+        assertTrue(LlmJson.screenTurn(json).then.isEmpty())
+    }
+
+    @Test
+    fun followUpsAreCapped() {
+        val step = """{"action":"tap","node":5,"text":null,"submit":false}"""
+        val json = """{"action":"tap","node":1,"text":null,"submit":false,"say":null,"choices":[],""" +
+            """"then":[${List(6) { step }.joinToString(",")}]}"""
+        assertEquals(3, LlmJson.screenTurn(json).then.size)
+    }
+
+    @Test
+    fun requestAsksForReasoningEffortOnlyWhenGiven() {
+        val schema = """{"type":"object"}"""
+        val withEffort = org.json.JSONObject(LlmJson.request("m", "n", schema, "i", "x", "low"))
+        assertEquals("low", withEffort.getJSONObject("reasoning").getString("effort"))
+        val without = org.json.JSONObject(LlmJson.request("m", "n", schema, "i", "x"))
+        assertTrue(!without.has("reasoning"))
+    }
+
+    @Test
     fun negativeNodeReadsAsMissing() {
         assertEquals(ScreenAction.Tap(null), LlmJson.screenAction("""{"action":"tap","node":-1}"""))
     }

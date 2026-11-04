@@ -46,6 +46,8 @@ async function callOpenAi(body) {
       model: secret("OPENAI_MODEL"),
       store: false,
       prompt_cache_key: `zeroui-${name}`,
+      // Same as the app (OpenAiLlmClient.REASONING_EFFORT); remove if the model rejects it.
+      reasoning: { effort: "low" },
       instructions,
       input,
       text: { format: { type: "json_schema", strict: true, name, schema } },

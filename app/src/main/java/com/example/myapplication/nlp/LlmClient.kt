@@ -1,8 +1,8 @@
 package com.example.myapplication.nlp
 
 import android.content.res.AssetManager
-import com.example.myapplication.automation.ScreenAction
 import com.example.myapplication.automation.ScreenLlm
+import com.example.myapplication.automation.ScreenTurn
 import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -57,13 +57,15 @@ interface LlmClient {
  *   processed start of the prompt, and `prompt_cache_key` sends calls of a kind to the same cache.
  * - Responses are read to the end and the connection is left open, so HttpURLConnection's
  *   process-wide pool reuses it. [warmUp] opens it while the user is still speaking.
+ * - Requests ask for [REASONING_EFFORT]. A model that doesn't take that setting answers 400; the
+ *   request is then sent again without it, and later requests leave it out.
  */
 class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
 
-    override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenAction {
+    override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenTurn {
         val input = LlmJson.screenInput(StayDate.today(), goal, history, screen)
         val text = post("screen_action", "agent_prompt.txt", "agent_schema.json", input, "step ${history.size + 1}")
-        return LlmJson.screenAction(text)
+        return LlmJson.screenTurn(text)
     }
 
     override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
@@ -97,37 +99,62 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         withContext(Dispatchers.IO) {
             if (!configured()) throw LlmUnavailableException("LlmSecrets.kt is not filled in")
             val label = if (detail == null) name else "$name ($detail)"
-            val start = Timing.now()
-            try {
-                val body = LlmJson.request(LlmSecrets.OPENAI_MODEL, name, asset(schemaFile), asset(promptFile), input)
-                    .toByteArray()
-                val connection = open("$API_URL/responses", "POST").apply {
-                    doOutput = true
-                    // Sent as it's written; otherwise the whole body waits in a buffer until the response is read.
-                    setFixedLengthStreamingMode(body.size)
-                    setRequestProperty("Content-Type", "application/json")
-                }
-                connection.outputStream.use { it.write(body) }
-                val sent = Timing.now()
-                val status = connection.responseCode
-                val answered = Timing.now()
-                val reply = readFully(connection, status)
-                val done = Timing.now()
-                // A long "connect and send" means a new connection was set up; a reused one takes a few ms.
-                Timing.log(
-                    "OpenAI $label: ${done - start} ms (connect and send ${sent - start}, " +
-                        "model ${answered - sent}, download ${done - answered}), ${LlmJson.usage(reply)}"
-                )
-                if (status != HttpURLConnection.HTTP_OK) {
-                    Timing.log("OpenAI $label returned $status: ${reply.take(300)}")
-                    throw LlmUnavailableException("OpenAI returned $status")
-                }
-                LlmJson.outputText(reply)
-            } catch (e: IOException) {
-                Timing.log("OpenAI $label failed after ${Timing.now() - start} ms: ${e.message}")
-                throw LlmUnavailableException("Couldn't reach OpenAI", e)
+            val effort = if (reasoningRejected) null else REASONING_EFFORT
+            val (status, reply) = send(label, name, promptFile, schemaFile, input, effort)
+            if (status == HttpURLConnection.HTTP_BAD_REQUEST && effort != null && reply.contains("reasoning")) {
+                // This model has no reasoning setting; ask again without it, and from now on.
+                reasoningRejected = true
+                Timing.log("OpenAI $label: the model doesn't take a reasoning effort, sending without it")
+                val (retryStatus, retryReply) = send(label, name, promptFile, schemaFile, input, null)
+                return@withContext checked(label, retryStatus, retryReply)
             }
+            checked(label, status, reply)
         }
+
+    private fun checked(label: String, status: Int, reply: String): String {
+        if (status != HttpURLConnection.HTTP_OK) {
+            Timing.log("OpenAI $label returned $status: ${reply.take(300)}")
+            throw LlmUnavailableException("OpenAI returned $status")
+        }
+        return LlmJson.outputText(reply)
+    }
+
+    /** One request; returns the HTTP status and the reply body. */
+    private fun send(
+        label: String,
+        name: String,
+        promptFile: String,
+        schemaFile: String,
+        input: String,
+        effort: String?
+    ): Pair<Int, String> {
+        val start = Timing.now()
+        try {
+            val body = LlmJson.request(LlmSecrets.OPENAI_MODEL, name, asset(schemaFile), asset(promptFile), input, effort)
+                .toByteArray()
+            val connection = open("$API_URL/responses", "POST").apply {
+                doOutput = true
+                // Sent as it's written; otherwise the whole body waits in a buffer until the response is read.
+                setFixedLengthStreamingMode(body.size)
+                setRequestProperty("Content-Type", "application/json")
+            }
+            connection.outputStream.use { it.write(body) }
+            val sent = Timing.now()
+            val status = connection.responseCode
+            val answered = Timing.now()
+            val reply = readFully(connection, status)
+            val done = Timing.now()
+            // A long "connect and send" means a new connection was set up; a reused one takes a few ms.
+            Timing.log(
+                "OpenAI $label: ${done - start} ms (connect and send ${sent - start}, " +
+                    "model ${answered - sent}, download ${done - answered}), ${LlmJson.usage(reply)}"
+            )
+            return status to reply
+        } catch (e: IOException) {
+            Timing.log("OpenAI $label failed after ${Timing.now() - start} ms: ${e.message}")
+            throw LlmUnavailableException("Couldn't reach OpenAI", e)
+        }
+    }
 
     private fun configured() =
         !LlmSecrets.OPENAI_API_KEY.startsWith("PASTE_") && !LlmSecrets.OPENAI_MODEL.startsWith("PASTE_")
@@ -156,6 +183,16 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         const val API_URL = "https://api.openai.com/v1"
         const val CONNECT_TIMEOUT_MS = 5000
         const val READ_TIMEOUT_MS = 10000
+
+        /**
+         * Kept to the least the model needs for these short tasks. If the timing log still shows
+         * many reasoning tokens and the model supports a lower setting ("minimal" or "none"), use it.
+         * A setting the model rejects only costs one retried request.
+         */
+        const val REASONING_EFFORT = "low"
+
+        /** Set once OpenAI said the model takes no reasoning effort; shared by every client. */
+        @Volatile var reasoningRejected = false
 
         /** Prompts and schemas never change while the app runs. */
         val assetCache = java.util.concurrent.ConcurrentHashMap<String, String>()
