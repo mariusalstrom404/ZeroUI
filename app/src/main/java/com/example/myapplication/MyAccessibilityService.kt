@@ -97,6 +97,7 @@ class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event?.let {
             Log.e("ZeroUIAutomation", "event=${it.eventType}, package=${it.packageName}, class=${it.className}")
+            automationEngine.onScreenEvent(it)
 
             // Our own overlays/dialog change constantly while we work; don't dump the tree for them.
             if (DebugConfig.ENABLE_ACCESSIBILITY_TREE_DUMP && it.packageName != packageName) {
@@ -179,7 +180,8 @@ class MyAccessibilityService : AccessibilityService() {
                 }
                 if (index < commands.lastIndex) {
                     statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${describe(commands[index + 1])}")
-                    delay(4000)
+                    // As long as the app takes to finish loading, not a fixed time.
+                    automationEngine.waitForScreenToSettle()
                 }
             }
 

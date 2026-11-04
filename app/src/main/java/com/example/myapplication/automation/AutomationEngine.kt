@@ -8,8 +8,11 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
+import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlin.coroutines.resume
@@ -22,6 +25,10 @@ class AutomationEngine(private val service: AccessibilityService) {
         private const val LOG = "ZeroUIAutomation"
         private const val DEFAULT_TIMEOUT = 10000L
         private const val POLL_INTERVAL = 400L
+        private const val SETTLE_POLL_MS = 100L
+        private const val SYSTEM_UI = "com.android.systemui"
+        private const val PROGRESS_BAR = "android.widget.ProgressBar"
+        private val LOADING_LABEL = Regex("^(loading|please wait|載入中|加載中|正在載入|正在加载)", RegexOption.IGNORE_CASE)
         private const val SCROLL_MAX_RETRIES = 8
         /**
          * How long a screen gets to populate before we start scrolling to look for an element.
@@ -143,6 +150,54 @@ class AutomationEngine(private val service: AccessibilityService) {
      * With [scrollIfNotFound], once the screen has had time to settle it scrolls the main list
      * forward, and back up again if the end is reached first.
      */
+    /** When an app other than ZeroUI and the status bar last changed on screen, in elapsed-realtime ms. */
+    @Volatile
+    private var lastScreenChange = 0L
+
+    /** Called with every accessibility event; window and content changes count as the screen changing. */
+    fun onScreenEvent(event: AccessibilityEvent) {
+        val pkg = event.packageName?.toString()
+        // ZeroUI's own overlay changes while it waits, and the status bar clock never stops.
+        if (pkg == service.packageName || pkg == SYSTEM_UI) return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        ) {
+            lastScreenChange = SystemClock.elapsedRealtime()
+        }
+    }
+
+    /**
+     * Waits until the app on screen has finished loading, as decided by [rule]: often well under
+     * a second, longer while a loading indicator shows. Returns false if it gave up waiting.
+     */
+    suspend fun waitForScreenToSettle(rule: SettleRule = SettleRule()): Boolean {
+        val start = SystemClock.elapsedRealtime()
+        while (true) {
+            val now = SystemClock.elapsedRealtime()
+            val state = rule.check(now - start, now - maxOf(start, lastScreenChange)) { isLoading() }
+            if (state != SettleRule.State.WAIT) {
+                Timing.log(
+                    "Screen settle: ${SystemClock.elapsedRealtime() - start} ms" +
+                        if (state == SettleRule.State.SETTLED) "" else " (gave up waiting)"
+                )
+                return state == SettleRule.State.SETTLED
+            }
+            delay(SETTLE_POLL_MS)
+        }
+    }
+
+    /** A visible spinner or a "Loading" label in the app on screen. */
+    private fun isLoading(): Boolean {
+        val root = finder.roots().firstOrNull() ?: return false
+        return finder.flatten(root).any { node ->
+            if (!node.isVisibleToUser) return@any false
+            // A determinate bar (with a range) is often just a progress display, not a load.
+            val spinner = node.className?.toString() == PROGRESS_BAR && node.rangeInfo == null
+            val label = (node.text ?: node.contentDescription)?.toString()?.trim()
+            spinner || (label != null && LOADING_LABEL.containsMatchIn(label))
+        }
+    }
+
     suspend fun waitForElement(
         selector: Selector?,
         timeoutMs: Long = DEFAULT_TIMEOUT,
