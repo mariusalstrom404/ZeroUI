@@ -27,9 +27,14 @@ object CommandBridge {
     private var statusListener: ((Status) -> Unit)? = null
     private var stopListener: (() -> Boolean)? = null
     private var awaitingListener: ((Boolean) -> Unit)? = null
+    private var listenListener: (() -> Unit)? = null
     private var answer: CompletableDeferred<String>? = null
 
     val isServiceConnected: Boolean get() = service != null
+
+    /** ZeroUI's chat is on screen (between its onStart and onStop). */
+    var isDialogVisible: Boolean = false
+        private set
 
     /** A running automation asked the user something and is waiting for the reply. */
     val isAwaitingAnswer: Boolean get() = answer != null
@@ -82,16 +87,54 @@ object CommandBridge {
     /** The voice dialog's mic opened or closed; shown on the floating button. */
     fun reportListening(listening: Boolean) { service?.setListening(listening) }
 
+    /** The chat came on screen or left it. While it's on screen, it does the listening, not the pill. */
+    fun reportDialogVisible(visible: Boolean) {
+        isDialogVisible = visible
+        if (visible) service?.cancelFollowUp()
+    }
+
+    /**
+     * A request has been dealt with: listen for the user's next one instead of going quiet. Once
+     * ZeroUI has finished speaking, the chat listens if it's on screen ([listenInDialog]);
+     * otherwise the status pill does, over whatever app is in front. Deciding only then matters:
+     * a command like "go home" finishes before the chat has left the screen. [prompt] is what the
+     * pill shows, such as a question that was just asked.
+     */
+    fun listenForMore(prompt: String? = null) {
+        val s = service
+        if (s != null) s.startFollowUp(prompt) else listenInDialog()
+    }
+
+    /**
+     * Shows the status pill with its mic button and [title], without listening, when the chat
+     * isn't on screen; e.g. after something that wasn't understood.
+     */
+    fun offerMic(title: String) {
+        if (!isDialogVisible) service?.offerMic(title)
+    }
+
+    /** The user said they're done: no more listening, and the pill goes away. */
+    fun endConversation() { service?.endConversation() }
+
+    /** Opens the chat's mic if the chat is on screen; returns false if it isn't. */
+    fun listenInDialog(): Boolean {
+        if (!isDialogVisible) return false
+        listenListener?.invoke()
+        return true
+    }
+
     fun setClient(
         onReply: (String, List<String>) -> Unit,
         onStatus: (Status) -> Unit,
         onStop: () -> Boolean,
-        onAwaitingAnswer: (Boolean) -> Unit = {}
+        onAwaitingAnswer: (Boolean) -> Unit = {},
+        onListen: () -> Unit = {}
     ) {
         replyListener = onReply
         statusListener = onStatus
         stopListener = onStop
         awaitingListener = onAwaitingAnswer
+        listenListener = onListen
     }
 
     fun clearClient() {
@@ -99,6 +142,7 @@ object CommandBridge {
         statusListener = null
         stopListener = null
         awaitingListener = null
+        listenListener = null
     }
 
     /** Sends parsed commands to the service, in order. Returns false if the service isn't connected. */

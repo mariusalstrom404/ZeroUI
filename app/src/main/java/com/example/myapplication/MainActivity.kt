@@ -1,26 +1,34 @@
 package com.example.myapplication
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -30,22 +38,35 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -54,13 +75,23 @@ import androidx.core.content.ContextCompat
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.speech.Speaker
 import com.example.myapplication.speech.SpeechManager
+import com.example.myapplication.ui.ChatSession
+import com.example.myapplication.ui.ChatTranscript
 import com.example.myapplication.ui.ProcessViewModels
 import com.example.myapplication.ui.VoiceViewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.launch
 
-/** One chat message. [choices] are answers shown as buttons under the latest assistant message. */
-data class Message(val text: String, val isUser: Boolean, val choices: List<String> = emptyList())
+/**
+ * One chat message. [choices] are answers shown as buttons under the latest assistant message;
+ * [time] is when it was added, in milliseconds since the epoch.
+ */
+data class Message(
+    val text: String,
+    val isUser: Boolean,
+    val choices: List<String> = emptyList(),
+    val time: Long = System.currentTimeMillis()
+)
 
 private val ListeningRed = Color(0xFFE53935)
 
@@ -90,6 +121,9 @@ class MainActivity : ComponentActivity() {
 
     /** Retries used up for the current automation question. */
     private var answerRetries = 0
+
+    /** The mic opened by itself for a next request; silence then just closes it, without a message. */
+    private var followUpListening = false
 
     // The automation taps the app underneath, so this dialog must not stay on top of it.
     private val getOutOfTheWay: () -> Unit = { moveTaskToBack(true) }
@@ -123,6 +157,7 @@ class MainActivity : ComponentActivity() {
                     ConversationalNLPUI(
                         modifier = Modifier.padding(innerPadding),
                         messages = viewModel.messages,
+                        history = viewModel.history,
                         isListening = isListening,
                         partialText = partialText,
                         voiceLevel = level,
@@ -130,19 +165,45 @@ class MainActivity : ComponentActivity() {
                         // While an automation waits for an answer, the mic is needed to give it.
                         canStop = viewModel.isProcessing && !viewModel.awaitingAnswer,
                         voiceRequests = voiceRequests,
+                        listenRequests = viewModel.listenRequests,
+                        onListenForMore = {
+                            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                                followUpListening = true
+                                speech.startListening()
+                            } else {
+                                // Left the screen meanwhile: the status pill listens instead.
+                                CommandBridge.listenForMore()
+                            }
+                        },
                         resumes = resumes,
                         onStartListening = {
+                            followUpListening = false
                             speech.startListening()
                             // Done while the user speaks, so the request after it starts on an open connection.
                             viewModel.warmUp()
                         },
                         onStopListening = { speech.stopListening() },
                         onStop = { viewModel.stop() },
-                        onSend = { viewModel.onUserCommand(it) }
+                        onSend = { viewModel.onUserCommand(it) },
+                        onNewConversation = { viewModel.newConversation() },
+                        onDeleteSession = { viewModel.deleteSession(it) },
+                        onClearHistory = { viewModel.clearSavedHistory() }
                     )
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        CommandBridge.reportDialogVisible(true)
+        // Coming back after a while starts a clean screen; the old conversation goes to History.
+        viewModel.onDialogShown()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        CommandBridge.reportDialogVisible(false)
     }
 
     override fun onResume() {
@@ -165,6 +226,7 @@ class MainActivity : ComponentActivity() {
      * otherwise the user is told what went wrong.
      */
     private fun onSpeechError(error: Int) {
+        if (followUpListening && SpeechManager.heardNothing(error)) return
         if (CommandBridge.isAwaitingAnswer && SpeechManager.heardNothing(error) && answerRetries < MAX_ANSWER_RETRIES) {
             answerRetries++
             lifecycleScope.launch {
@@ -189,20 +251,32 @@ class MainActivity : ComponentActivity() {
 fun ConversationalNLPUI(
     modifier: Modifier = Modifier,
     messages: List<Message>,
+    history: List<ChatSession>,
     isListening: Boolean,
     partialText: String,
     voiceLevel: Float,
     isProcessing: Boolean,
     canStop: Boolean,
     voiceRequests: Int,
+    listenRequests: Int,
+    onListenForMore: () -> Unit,
     resumes: Int,
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
     onStop: () -> Unit,
-    onSend: (String) -> Unit
+    onSend: (String) -> Unit,
+    onNewConversation: () -> Unit,
+    onDeleteSession: (Long) -> Unit,
+    onClearHistory: () -> Unit
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
+    // The History screen, and the past conversation open in it.
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    var openSessionId by rememberSaveable { mutableStateOf<Long?>(null) }
+    BackHandler(enabled = showHistory) {
+        if (openSessionId != null) openSessionId = null else showHistory = false
+    }
     val listState = rememberLazyListState()
     val showHeard = isListening || partialText.isNotBlank()
 
@@ -230,7 +304,36 @@ fun ConversationalNLPUI(
     }
 
     LaunchedEffect(voiceRequests) {
-        if (voiceRequests > 0) requestListen()
+        if (voiceRequests > 0) {
+            // Asked to listen (the floating button, or an automation's question): back to the chat.
+            showHistory = false
+            openSessionId = null
+            requestListen()
+        }
+    }
+
+    // A request was dealt with: listen for the next one once ZeroUI has finished speaking. Not while
+    // the user is typing or reading History, and never by asking for the mic permission on its own.
+    LaunchedEffect(listenRequests) {
+        if (listenRequests == 0) return@LaunchedEffect
+        Speaker.awaitSilence()
+        if (!isListening && !showHistory && inputText.isBlank() && hasMicPermission(context)) onListenForMore()
+    }
+
+    if (showHistory) {
+        HistoryScreen(
+            history = history,
+            openSessionId = openSessionId,
+            onOpen = { openSessionId = it },
+            onBack = { if (openSessionId != null) openSessionId = null else showHistory = false },
+            onDelete = {
+                onDeleteSession(it)
+                openSessionId = null
+            },
+            onClearAll = onClearHistory,
+            modifier = modifier.fillMaxSize()
+        )
+        return
     }
 
     Column(
@@ -241,7 +344,11 @@ fun ConversationalNLPUI(
         ZeroUIHeader(
             isListening = isListening,
             isProcessing = isProcessing,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+            canCopy = messages.any { it.isUser },
+            onHistory = { showHistory = true },
+            onCopy = { copyText(context, ChatTranscript.format(messages), "conversation") },
+            onNewConversation = onNewConversation,
+            modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
         )
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -256,7 +363,7 @@ fun ConversationalNLPUI(
         ) {
             itemsIndexed(messages) { index, msg ->
                 Column {
-                    ChatBubble(msg)
+                    ChatBubble(msg, onCopy = { copyText(context, msg.text, "message") })
                     // Only the latest message's buttons still answer anything.
                     if (index == messages.lastIndex && !msg.isUser && msg.choices.isNotEmpty() && !showHeard) {
                         ChoiceChips(msg.choices, onChoice = { send(it) })
@@ -289,7 +396,16 @@ private fun hasMicPermission(context: Context) =
 // ── Header ────────────────────────────────────────────────────────────────────
 
 @Composable
-fun ZeroUIHeader(isListening: Boolean, isProcessing: Boolean, modifier: Modifier = Modifier) {
+fun ZeroUIHeader(
+    isListening: Boolean,
+    isProcessing: Boolean,
+    canCopy: Boolean,
+    onHistory: () -> Unit,
+    onCopy: () -> Unit,
+    onNewConversation: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -309,6 +425,33 @@ fun ZeroUIHeader(isListening: Boolean, isProcessing: Boolean, modifier: Modifier
         )
         Spacer(Modifier.weight(1f))
         StatusChip(isListening = isListening, isProcessing = isProcessing)
+        IconButton(onClick = onHistory) {
+            Icon(Icons.Default.History, contentDescription = "History", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Box {
+            IconButton(onClick = { menuOpen = true }, modifier = Modifier.width(32.dp)) {
+                Icon(Icons.Default.MoreVert, contentDescription = "More options", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("Copy conversation") },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                    enabled = canCopy,
+                    onClick = { menuOpen = false; onCopy() }
+                )
+                DropdownMenuItem(
+                    text = { Text("New conversation") },
+                    leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    enabled = canCopy,
+                    onClick = { menuOpen = false; onNewConversation() }
+                )
+                DropdownMenuItem(
+                    text = { Text("History") },
+                    leadingIcon = { Icon(Icons.Default.History, contentDescription = null) },
+                    onClick = { menuOpen = false; onHistory() }
+                )
+            }
+        }
     }
 }
 
@@ -434,10 +577,184 @@ private fun openSettings(context: Context, intent: Intent) {
     }
 }
 
-// ── Chat bubbles ───────────────────────────────────────────────────────────────
+/** Copies [text] to the clipboard. Android 13 and later confirm it themselves; older versions get a toast. */
+private fun copyText(context: Context, text: String, what: String) {
+    val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText("ZeroUI $what", text))
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        Toast.makeText(context, "Copied the $what", Toast.LENGTH_SHORT).show()
+    }
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+
+/** Past conversations, newest first; [openSessionId] shows one of them in full. */
+@Composable
+fun HistoryScreen(
+    history: List<ChatSession>,
+    openSessionId: Long?,
+    onOpen: (Long) -> Unit,
+    onBack: () -> Unit,
+    onDelete: (Long) -> Unit,
+    onClearAll: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val open = openSessionId?.let { id -> history.firstOrNull { it.id == id } }
+    if (open != null) {
+        SessionScreen(open, onBack = onBack, onDelete = { onDelete(open.id) }, modifier = modifier)
+    } else {
+        HistoryList(history, onOpen = onOpen, onBack = onBack, onClearAll = onClearAll, modifier = modifier)
+    }
+}
 
 @Composable
-fun ChatBubble(message: Message) {
+private fun HistoryList(
+    history: List<ChatSession>,
+    onOpen: (Long) -> Unit,
+    onBack: () -> Unit,
+    onClearAll: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var confirmClear by remember { mutableStateOf(false) }
+    val now = remember { System.currentTimeMillis() }
+    Column(modifier) {
+        ScreenBar(title = "History", onBack = onBack) {
+            if (history.isNotEmpty()) TextButton(onClick = { confirmClear = true }) { Text("Clear all") }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        if (history.isEmpty()) {
+            Text(
+                "No earlier conversations yet. When you start a new one, the last one is kept here.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(20.dp)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(history, key = { it.id }) { session ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth().clickable { onOpen(session.id) }
+                    ) {
+                        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                            Text(
+                                ChatTranscript.sessionTitle(session.id, now),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                session.preview,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                            val count = session.userMessageCount
+                            Text(
+                                "$count ${if (count == 1) "request" else "requests"}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (confirmClear) {
+        ConfirmDialog(
+            title = "Clear all history?",
+            text = "All earlier conversations will be deleted. The one on screen stays.",
+            confirm = "Clear all",
+            onConfirm = { confirmClear = false; onClearAll() },
+            onDismiss = { confirmClear = false }
+        )
+    }
+}
+
+/** One past conversation, read-only. Messages copy on a long press, like in the chat. */
+@Composable
+private fun SessionScreen(session: ChatSession, onBack: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var confirmDelete by remember { mutableStateOf(false) }
+    val title = remember(session.id) { ChatTranscript.sessionTitle(session.id, System.currentTimeMillis()) }
+    Column(modifier) {
+        ScreenBar(title = title, onBack = onBack) {
+            IconButton(onClick = { copyText(context, ChatTranscript.formatSession(session), "conversation") }) {
+                Icon(Icons.Default.ContentCopy, contentDescription = "Copy conversation")
+            }
+            IconButton(onClick = { confirmDelete = true }) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete conversation")
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            items(session.messages) { msg ->
+                ChatBubble(msg, onCopy = { copyText(context, msg.text, "message") })
+            }
+        }
+    }
+    if (confirmDelete) {
+        ConfirmDialog(
+            title = "Delete this conversation?",
+            text = "It will be removed from History.",
+            confirm = "Delete",
+            onConfirm = { confirmDelete = false; onDelete() },
+            onDismiss = { confirmDelete = false }
+        )
+    }
+}
+
+/** A back arrow, a title, and [actions] at the end. */
+@Composable
+private fun ScreenBar(title: String, onBack: () -> Unit, actions: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+        }
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        actions()
+    }
+}
+
+@Composable
+private fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(confirm) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+// ── Chat bubbles ───────────────────────────────────────────────────────────────
+
+/** [onCopy], when given, runs on a long press, and is offered to screen readers as "Copy". */
+@Composable
+fun ChatBubble(message: Message, onCopy: (() -> Unit)? = null) {
+    val haptics = LocalHapticFeedback.current
     val isUser = message.isUser
     val bubbleShape = if (isUser) {
         RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
@@ -455,7 +772,20 @@ fun ChatBubble(message: Message) {
             color = bgColor,
             shape = bubbleShape,
             shadowElevation = if (isUser) 2.dp else 1.dp,
-            modifier = Modifier.widthIn(max = 260.dp)
+            modifier = Modifier
+                .widthIn(max = 260.dp)
+                .then(
+                    if (onCopy == null) Modifier else Modifier
+                        .pointerInput(onCopy) {
+                            detectTapGestures(onLongPress = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCopy()
+                            })
+                        }
+                        .semantics {
+                            customActions = listOf(CustomAccessibilityAction("Copy") { onCopy(); true })
+                        }
+                )
         ) {
             Text(
                 text = message.text,

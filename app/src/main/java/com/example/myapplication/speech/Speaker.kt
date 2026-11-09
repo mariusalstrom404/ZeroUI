@@ -6,6 +6,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 
@@ -83,6 +84,18 @@ object Speaker : TextToSpeech.OnInitListener {
         })
         engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
         withTimeoutOrNull(MAX_SPEECH_WAIT_MS) { finished.await() }
+    }
+
+    /**
+     * Returns once nothing is being said or waiting to be said, plus a moment for the speaker's
+     * echo to die down, so a mic opened afterwards doesn't hear ZeroUI's own voice.
+     */
+    suspend fun awaitSilence() {
+        withTimeoutOrNull(MAX_SPEECH_WAIT_MS) {
+            delay(200) // a reply queued just now may not have started yet
+            while (pending != null || tts?.isSpeaking == true) delay(100)
+        }
+        delay(300)
     }
 
     fun stop() {

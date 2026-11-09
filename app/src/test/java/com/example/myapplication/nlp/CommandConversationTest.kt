@@ -47,6 +47,45 @@ class CommandConversationTest {
     }
 
     @Test
+    fun nonsenseIsMarkedNotUnderstood() {
+        commands(AppIntent.Unknown)
+        val turn = say("dada")
+        assertTrue(turn.run.isEmpty())
+        assertEquals(false, turn.understood)
+    }
+
+    @Test
+    fun partlyUnderstoodStillRuns() {
+        commands(AppIntent.Unknown, AppIntent.TakeScreenshot)
+        val turn = say("blah and take a screenshot please, sort of")
+        assertEquals(true, turn.understood)
+        assertEquals(listOf<AppIntent>(AppIntent.TakeScreenshot), turn.run)
+    }
+
+    @Test
+    fun systemCommandSkipsTheLlm() {
+        val turn = say("turn on wifi and open the calculator")
+        assertEquals(
+            listOf(AppIntent.SystemToggle(SystemSetting.WIFI, true), AppIntent.OpenSystemApp(SystemApp.CALCULATOR)),
+            turn.run
+        )
+        assertEquals(0, llm.parseCalls)
+    }
+
+    @Test
+    fun systemCommandWorksOffline() {
+        llm.unavailable = true
+        assertEquals(listOf<AppIntent>(AppIntent.SystemControl(SystemAction.HOME)), say("go home").run)
+    }
+
+    @Test
+    fun otherCommandsStillGoToTheLlm() {
+        commands(AppIntent.AppTask("message Bob"))
+        say("turn on wifi and message Bob")
+        assertEquals(1, llm.parseCalls)
+    }
+
+    @Test
     fun proxyDownRunsNothing() {
         llm.unavailable = true
         val turn = say("transfer 50 to Bob")

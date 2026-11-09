@@ -139,6 +139,13 @@ class SpeechManager(context: Context) {
         stopped()
     }
 
+    /** Closes the mic and drops what was heard, without a result or an error. */
+    fun cancel() {
+        recognizer?.cancel()
+        stopped()
+        _partialText.value = ""
+    }
+
     private fun stopped() {
         _isListening.value = false
         _level.value = 0f
