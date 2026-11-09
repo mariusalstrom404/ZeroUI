@@ -7,6 +7,7 @@ import android.os.BatteryManager
 import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
@@ -16,8 +17,11 @@ import androidx.lifecycle.ViewModelStoreOwner
 import com.example.myapplication.Message
 import com.example.myapplication.debug.Timing
 import com.example.myapplication.ipc.CommandBridge
+import com.example.myapplication.speech.Speaker
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.CommandConversation
+import com.example.myapplication.nlp.ConversationClosing
+import com.example.myapplication.nlp.SystemAction
 import com.example.myapplication.nlp.OpenAiLlmClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,8 +29,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
+import android.util.Log
+import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * Owns the one [VoiceViewModel] for the whole process instead of each MainActivity. The dialog is
@@ -45,7 +50,17 @@ object ProcessViewModels : ViewModelStoreOwner {
  */
 class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
+    /** The conversation on screen. Earlier ones are in [history]. */
     val messages: SnapshotStateList<Message> = mutableStateListOf()
+
+    /** Earlier conversations, newest first. */
+    val history: SnapshotStateList<ChatSession> = mutableStateListOf()
+
+    /** When the conversation on screen started; it's saved under this id. */
+    private var sessionId = System.currentTimeMillis()
+    private val store = ChatHistoryStore(File(app.filesDir, "chat_history.json"))
+    /** Writes happen one at a time, in order, off the main thread. */
+    private val writer = Executors.newSingleThreadExecutor()
 
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private val llm = OpenAiLlmClient(app.assets)
@@ -64,7 +79,14 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
      * Set by the host Activity to route assistant text to text-to-speech. With interrupt false it
      * waits for what is being said, so a turn's sentences are all heard.
      */
-    var speak: (text: String, interrupt: Boolean) -> Unit = { _, _ -> }
+    var speak: (text: String, interrupt: Boolean) -> Unit = { text, interrupt -> Speaker.speak(text, interrupt) }
+
+    /**
+     * Bumped when the chat should open its mic for the user's next request, after ZeroUI has
+     * answered the last one (see [CommandBridge.listenForMore]).
+     */
+    var listenRequests by mutableIntStateOf(0)
+        private set
 
     /**
      * Set by the host Activity to get out of the way once a running automation has its answer.
@@ -75,58 +97,127 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     init {
         warmUp()
         loadHistory()
-        if (messages.isEmpty()) {
-            messages.add(Message(WELCOME, false, EXAMPLES))
-        }
+        // Every launch starts with a clean screen; what was said before is in History.
+        messages.add(welcome())
         // Receive replies and per-command lifecycle status directly from the service.
         CommandBridge.setClient(
             onReply = { text, choices -> onServiceReply(text, choices) },
             onStatus = { isProcessing = it == CommandBridge.Status.STARTED },
             onStop = { stopRequest() },
-            onAwaitingAnswer = { awaitingAnswer = it }
+            onAwaitingAnswer = { awaitingAnswer = it },
+            onListen = { listenRequests++ }
         )
     }
 
-    /** Saved after every message, so the chat survives the app being closed. Only the latest are kept. */
+    /**
+     * Saved after every message, so nothing is lost if the app is closed: the conversation on
+     * screen (once the user has said something) and the earlier ones.
+     */
     private fun saveHistory() {
-        val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
-        val array = JSONArray()
-        messages.takeLast(MAX_SAVED_MESSAGES).forEach {
-            val obj = JSONObject()
-            obj.put("text", it.text)
-            obj.put("isUser", it.isUser)
-            if (it.choices.isNotEmpty()) obj.put("choices", JSONArray(it.choices))
-            array.put(obj)
-        }
-        prefs.edit().putString("history", array.toString()).apply()
-    }
-
-    private fun loadHistory() {
-        val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
-        val history = prefs.getString("history", null) ?: return
-        try {
-            val array = JSONArray(history)
-            messages.clear()
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                val choices = obj.optJSONArray("choices")?.let { c -> List(c.length()) { c.getString(it) } } ?: emptyList()
-                messages.add(Message(obj.getString("text"), obj.getBoolean("isUser"), choices))
+        val sessions = buildList {
+            current()?.let { add(it) }
+            addAll(history)
+        }.take(ChatSessions.MAX_SESSIONS)
+        writer.execute {
+            try {
+                store.save(sessions)
+            } catch (e: Exception) {
+                Log.e("VoiceViewModel", "Couldn't save the chat history", e)
             }
-        } catch (e: Exception) {
-            messages.clear()
         }
     }
 
-    private fun clearHistory() {
-        messages.clear()
+    /** The conversation on screen as a session, or null while it's only the greeting. */
+    private fun current(): ChatSession? =
+        messages.takeIf { ChatSessions.worthKeeping(it) }
+            ?.let { ChatSession(sessionId, it.takeLast(ChatSessions.MAX_MESSAGES_PER_SESSION)) }
+
+    /** Everything saved becomes history, including the conversation that was on screen last time. */
+    private fun loadHistory() {
+        val saved = try {
+            store.load()
+        } catch (e: Exception) {
+            Log.e("VoiceViewModel", "Couldn't read the chat history", e)
+            emptyList()
+        }
+        history.addAll(saved.sortedByDescending { it.id })
+        migrateOldHistory()
+    }
+
+    /** Older versions kept one chat in preferences; it becomes the oldest session. */
+    private fun migrateOldHistory() {
         val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
+        val old = prefs.getString("history", null) ?: return
+        // Old messages have no times; the file's last save is the closest to when they were said.
+        val prefsFile = File(getApplication<Application>().applicationInfo.dataDir, "shared_prefs/voice_history.xml")
+        val savedAt = prefsFile.lastModified().takeIf { it > 0 }
+            ?: history.lastOrNull()?.id?.minus(1)
+            ?: System.currentTimeMillis()
+        ChatHistoryCodec.decodeLegacy(old, savedAt)
+            ?.takeIf { ChatSessions.worthKeeping(it.messages) }
+            ?.let { history.add(it) }
         prefs.edit().remove("history").apply()
+        saveHistory()
+    }
+
+    private fun welcome() = Message(
+        if (history.isEmpty()) WELCOME else "$WELCOME Earlier conversations are in History.",
+        false,
+        EXAMPLES
+    )
+
+    /**
+     * Moves the conversation on screen into [history] and starts a clean one. An unanswered
+     * question is dropped with it; a running automation carries on and reports here.
+     */
+    fun newConversation() {
+        current()?.let { session ->
+            history.removeAll { it.id == session.id }
+            history.add(0, session)
+        }
+        conversation.reset()
+        sessionId = System.currentTimeMillis()
+        messages.clear()
+        messages.add(welcome())
+        saveHistory()
+    }
+
+    /**
+     * The dialog was opened. After [ChatSessions.IDLE_MS] without a message the screen starts a
+     * new conversation, unless something is still going on in this one.
+     */
+    fun onDialogShown() {
+        val busy = isProcessing || awaitingAnswer || conversation.isWaiting
+        if (!busy && ChatSessions.worthKeeping(messages) &&
+            ChatSessions.isIdle(messages.lastOrNull()?.time, System.currentTimeMillis())
+        ) {
+            newConversation()
+        }
+    }
+
+    fun deleteSession(id: Long) {
+        history.removeAll { it.id == id }
+        saveHistory()
+    }
+
+    fun clearSavedHistory() {
+        history.clear()
+        saveHistory()
+    }
+
+    /** "Clear history" said to ZeroUI: earlier conversations and this one. */
+    private fun clearHistory() {
+        history.clear()
+        sessionId = System.currentTimeMillis()
+        messages.clear()
+        saveHistory()
         addAssistant("I've cleared our conversation history.")
     }
 
     override fun onCleared() {
         super.onCleared()
         scope.cancel()
+        writer.shutdown()
         CommandBridge.clearClient()
     }
 
@@ -171,6 +262,12 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             onAnswered()
             return
         }
+        // "No thanks", "that's all": the user is done, so ZeroUI stops listening rather than asking the LLM.
+        if (!conversation.isWaiting && ConversationClosing.isClosing(userInput)) {
+            addAssistant("Okay. Tap the mic whenever you need me.")
+            CommandBridge.endConversation()
+            return
+        }
         requestJob?.cancel()
         isProcessing = true
         CommandBridge.showUnderstanding(userInput)
@@ -183,6 +280,12 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                 addAssistant(say, choices = choices, interrupt = i == 0)
             }
             run(turn.run)
+            when {
+                // Possibly background noise: listening again could go round in circles. The mic is offered instead.
+                !turn.understood -> CommandBridge.offerMic("I didn't catch that")
+                // Nothing went to the service, so nothing will report back: listen for more now.
+                turn.run.all { isLocal(it) } -> CommandBridge.listenForMore(turn.says.lastOrNull())
+            }
         }
     }
 
@@ -207,9 +310,17 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             CommandBridge.clearUnderstanding()
         } else {
             // A task in the app already in front needs this dialog out of its way.
-            if (remote.any { it is AppIntent.AppTask && it.app == null }) onAnswered()
+            if (remote.any { actsOnAppInFront(it) }) onAnswered()
             dispatchToService(remote)
         }
+    }
+
+    /** Commands about the app underneath: the dialog would be what they act on, or capture. */
+    private fun actsOnAppInFront(intent: AppIntent): Boolean = when (intent) {
+        is AppIntent.AppTask -> intent.app == null
+        is AppIntent.SystemControl -> intent.action == SystemAction.BACK || intent.action == SystemAction.SPLIT_SCREEN
+        AppIntent.TakeScreenshot -> true
+        else -> false
     }
 
     private fun isLocal(intent: AppIntent): Boolean =
@@ -252,7 +363,6 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        const val MAX_SAVED_MESSAGES = 100
         const val WELCOME = "Hi! I'm ZeroUI. Tell me what to do, or tap an example to try it."
         val EXAMPLES = listOf(
             "Check my battery",

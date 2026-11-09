@@ -23,6 +23,13 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
     data object RepeatLast : AppIntent()
     data object TakeScreenshot : AppIntent()
     data class CameraAction(val takePhoto: Boolean = false) : AppIntent()
+    /** Switches [setting] on ([enable] true), off (false), or to the other state (null). */
+    data class SystemToggle(val setting: SystemSetting, val enable: Boolean?) : AppIntent()
+    /** Home, back, recents, notifications, lock screen and the like. */
+    data class SystemControl(val action: SystemAction) : AppIntent()
+    data class OpenSettings(val page: SettingsPage) : AppIntent()
+    /** A built-in app found by its role, such as the dialer or calculator. */
+    data class OpenSystemApp(val app: SystemApp) : AppIntent()
 
     // --- Navigation / apps ---
     data class Navigate(val destination: String?, val mode: String? = null) : AppIntent()

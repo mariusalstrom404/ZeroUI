@@ -1,8 +1,10 @@
 package com.example.myapplication
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
@@ -32,10 +34,16 @@ import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.HotelQuery
 import com.example.myapplication.nlp.OpenAiLlmClient
 import com.example.myapplication.nlp.StayDate
+import com.example.myapplication.nlp.SystemAction
 import com.example.myapplication.overlay.FloatingMicButton
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
 import com.example.myapplication.speech.Speaker
+import com.example.myapplication.speech.SpeechManager
+import com.example.myapplication.ui.ProcessViewModels
+import com.example.myapplication.ui.VoiceViewModel
+import androidx.lifecycle.ViewModelProvider
+import com.example.myapplication.system.SystemController
 import kotlinx.coroutines.*
 import java.util.regex.Pattern
 
@@ -53,9 +61,16 @@ class MyAccessibilityService : AccessibilityService() {
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
     private val foodDeliveryAuto by lazy { FoodDeliveryAutomation(automationEngine) }
     private val bookingAuto by lazy { BookingAutomation(automationEngine) }
+    private val systemController by lazy { SystemController(this, automationEngine) }
     private var dumpJob: Job? = null
 
     private var statusIndicator: StatusIndicator? = null
+
+    /** Listens in the status pill, for the next request after one is done, while the chat is closed. */
+    private val pillSpeechHolder = lazy { createPillSpeech() }
+    private val pillSpeech by pillSpeechHolder
+    private var pillListening = false
+    private var followUpJob: Job? = null
 
     /** How the command currently being processed ended; set by [fail] and [ask]. */
     private enum class Outcome { OK, NEEDS_INPUT, FAILED }
@@ -136,6 +151,15 @@ class MyAccessibilityService : AccessibilityService() {
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
         statusIndicator?.onStop = { stopCurrentCommand() }
+        statusIndicator?.onMic = { onPillMic() }
+        statusIndicator?.onDismiss = {
+            cancelFollowUp()
+            statusIndicator?.hide()
+        }
+        statusIndicator?.onOpenChat = {
+            cancelFollowUp()
+            startActivity(voiceDialogIntent(listen = false))
+        }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
     }
@@ -169,7 +193,7 @@ class MyAccessibilityService : AccessibilityService() {
     private fun refreshFloatingButton() {
         floatingButton?.setState(
             when {
-                listening -> FloatingMicButton.State.LISTENING
+                listening || pillListening -> FloatingMicButton.State.LISTENING
                 understanding || runningChains > 0 -> FloatingMicButton.State.WORKING
                 else -> FloatingMicButton.State.READY
             }
@@ -185,6 +209,7 @@ class MyAccessibilityService : AccessibilityService() {
         if (job == null && !stoppedRequest) return
         Log.d("NLPControl", "Stopped by the user")
         job?.cancel()
+        cancelFollowUp()
         Speaker.stop()
         statusIndicator?.show(Phase.STOPPED, "Stopped", "Nothing else will be tapped")
         sendReply("Okay, I stopped.")
@@ -192,13 +217,15 @@ class MyAccessibilityService : AccessibilityService() {
 
     private suspend fun executeCommandChain(commands: List<AppIntent>) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
+        cancelFollowUp()
         val chainStart = Timing.now()
+        var listenAfter = false
+        var question: String? = null
         understanding = false
         runningChains++
         refreshFloatingButton()
         try {
             var failure: String? = null
-            var question: String? = null
             for ((index, intent) in commands.withIndex()) {
                 val progress = if (commands.size > 1) "Command ${index + 1} of ${commands.size}" else null
                 processSingleCommand(intent, progress)
@@ -229,13 +256,117 @@ class MyAccessibilityService : AccessibilityService() {
                     if (lastReply == null) Speaker.speak("Done.", interrupt = false)
                 }
             }
+            listenAfter = listensAfter(commands.last())
         } finally {
             Timing.log("Command chain of ${commands.size}: ${Timing.now() - chainStart} ms")
             runningChains--
             refreshFloatingButton()
             CommandBridge.postStatus(CommandBridge.Status.FINISHED)
         }
+        // Not reached when the chain was stopped. ZeroUI stays with the user instead of going quiet.
+        if (listenAfter) CommandBridge.listenForMore(question)
     }
+
+    /** Not after the screen was locked or the power menu opened: nobody is about to talk to ZeroUI. */
+    private fun listensAfter(intent: AppIntent): Boolean =
+        !(intent is AppIntent.SystemControl &&
+            (intent.action == SystemAction.LOCK_SCREEN || intent.action == SystemAction.POWER_MENU))
+
+    // --- Listening in the status pill ---
+
+    /**
+     * Opens the pill's mic for the user's next request once ZeroUI has finished speaking. [prompt]
+     * is the pill's title, such as a question that was just asked. Called through
+     * [CommandBridge.listenForMore] when the chat isn't on screen.
+     */
+    fun startFollowUp(prompt: String?) {
+        followUpJob?.cancel()
+        followUpJob = serviceScope.launch {
+            Speaker.awaitSilence()
+            // A newer request may have started, or the chat opened, while ZeroUI was talking.
+            if (runningChains > 0 || understanding) return@launch
+            if (CommandBridge.listenInDialog()) return@launch
+            listenInPill(prompt ?: "Anything else?", "Listening… just say it")
+        }
+    }
+
+    /** Closes the pill's mic without acting on what was heard, e.g. when the chat opens. */
+    fun cancelFollowUp() {
+        followUpJob?.cancel()
+        followUpJob = null
+        if (pillListening) {
+            pillSpeech.cancel()
+            pillListening = false
+            refreshFloatingButton()
+            if (statusIndicator?.currentPhase == Phase.LISTENING) statusIndicator?.hide()
+        }
+    }
+
+    fun offerMic(title: String) {
+        cancelFollowUp()
+        clearUnderstanding()
+        statusIndicator?.show(Phase.READY, title, "Tap the mic to try again")
+    }
+
+    fun endConversation() {
+        cancelFollowUp()
+        understanding = false
+        refreshFloatingButton()
+        statusIndicator?.hide()
+    }
+
+    /** The pill's mic button: speak now, or finish speaking. */
+    private fun onPillMic() {
+        if (pillListening) {
+            pillSpeech.stopListening()
+            return
+        }
+        followUpJob?.cancel()
+        Speaker.stop() // the user wants to talk; ZeroUI stops talking
+        listenInPill("I'm listening", "Say what you need, or give feedback")
+    }
+
+    private fun listenInPill(title: String, detail: String) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            statusIndicator?.show(Phase.READY, "Tap here to open ZeroUI", "It needs the microphone to hear you")
+            return
+        }
+        statusIndicator?.show(Phase.LISTENING, title, detail)
+        pillListening = true
+        refreshFloatingButton()
+        pillSpeech.startListening()
+    }
+
+    private fun createPillSpeech() = SpeechManager(this).also { speech ->
+        speech.resultListener = { text ->
+            pillListening = false
+            refreshFloatingButton()
+            // Handled exactly like a request in the chat, which also keeps it in the history.
+            voiceViewModel().onUserCommand(text)
+        }
+        speech.errorListener = { error ->
+            pillListening = false
+            refreshFloatingButton()
+            val message = if (SpeechManager.heardNothing(error)) null else SpeechManager.messageFor(error)
+            statusIndicator?.show(
+                Phase.READY,
+                message ?: "Tap the mic to say more",
+                if (message == null) "Or tap here to type" else null
+            )
+        }
+        serviceScope.launch {
+            speech.partialText.collect { heard ->
+                if (pillListening && heard.isNotBlank()) statusIndicator?.updateDetail("“$heard”")
+            }
+        }
+    }
+
+    /** The process-wide chat, created here if ZeroUI hasn't been opened since the process started. */
+    private fun voiceViewModel(): VoiceViewModel =
+        ViewModelProvider(
+            ProcessViewModels,
+            ViewModelProvider.AndroidViewModelFactory.getInstance(application)
+        )[VoiceViewModel::class.java]
 
     private suspend fun processSingleCommand(intent: AppIntent, progress: String? = null) {
         Log.d("NLPControl", "Processing: $intent")
@@ -276,6 +407,14 @@ class MyAccessibilityService : AccessibilityService() {
         AppIntent.RepeatLast -> "Repeating your last command"
         AppIntent.TakeScreenshot -> "Taking a screenshot"
         is AppIntent.CameraAction -> "Opening the camera"
+        is AppIntent.SystemToggle -> when (intent.enable) {
+            true -> "Turning on ${intent.setting.label}"
+            false -> "Turning off ${intent.setting.label}"
+            null -> "Switching ${intent.setting.label}"
+        }
+        is AppIntent.SystemControl -> intent.action.label
+        is AppIntent.OpenSettings -> "Opening ${intent.page.label}"
+        is AppIntent.OpenSystemApp -> "Opening ${intent.app.labels.first()}"
         is AppIntent.Navigate -> "Starting navigation"
         is AppIntent.OpenApp -> "Opening ${intent.name}".trim()
         is AppIntent.AppOrder -> "Ordering ${intent.item} on ${intent.app}"
@@ -635,6 +774,33 @@ class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
+            is AppIntent.SystemToggle -> toggleSetting(intent)
+
+            is AppIntent.SystemControl -> {
+                // These act on the app underneath, so the voice dialog gets out of the way first.
+                if (intent.action == SystemAction.BACK || intent.action == SystemAction.SPLIT_SCREEN) delay(400)
+                if (systemController.perform(intent.action)) {
+                    sendReply("${intent.action.label}.")
+                } else {
+                    fail("This phone doesn't let me do that.")
+                }
+            }
+
+            is AppIntent.OpenSettings -> when (systemController.openSettings(intent.page)) {
+                intent.page -> sendReply("Opening ${intent.page.label}.")
+                null -> fail("I couldn't open Settings.")
+                else -> sendReply("This phone has no ${intent.page.label} page I can open directly, so I opened Settings.")
+            }
+
+            is AppIntent.OpenSystemApp -> {
+                val name = intent.app.labels.first()
+                if (systemController.openSystemApp(intent.app) { launchAppByName(it) }) {
+                    sendReply("Opening $name.")
+                } else {
+                    fail("I couldn't find a $name app on this phone.")
+                }
+            }
+
             // Navigation
             is AppIntent.Navigate -> {
                 if (!intent.destination.isNullOrEmpty()) {
@@ -776,6 +942,34 @@ class MyAccessibilityService : AccessibilityService() {
                 fail("Sorry, I didn't understand that.")
             }
         }
+    }
+
+    /**
+     * A direct switch or Quick Settings first; when neither works on this phone, the switch on the
+     * setting's own Settings page, and only if that can't be found either, the screen agent.
+     */
+    private suspend fun toggleSetting(intent: AppIntent.SystemToggle) {
+        val setting = intent.setting
+        val state = systemController.toggle(setting, intent.enable)
+        if (state != null) {
+            sendReply("${setting.label} is ${if (state) "on" else "off"}.")
+            return
+        }
+        if (systemController.openSettings(setting.page) == null) {
+            fail("I couldn't change ${setting.label} on this phone.")
+            return
+        }
+        automationEngine.waitForScreenToSettle()
+        systemController.toggleOnPage(setting, intent.enable)?.let { now ->
+            sendReply("${setting.label} is ${if (now) "on" else "off"}.")
+            return
+        }
+        val change = when (intent.enable) {
+            true -> "Turn ${setting.label} on."
+            false -> "Turn ${setting.label} off."
+            null -> "Switch ${setting.label} to the other state."
+        }
+        reportAgent(runAgent("$change Change only this one setting, then stop."))
     }
 
     private suspend fun runAgent(goal: String): ScreenAgent.Outcome =
@@ -1137,6 +1331,7 @@ class MyAccessibilityService : AccessibilityService() {
         super.onDestroy()
         serviceScope.cancel()
         CommandBridge.detachService(this)
+        if (pillSpeechHolder.isInitialized()) pillSpeech.destroy()
         statusIndicator?.destroy()
         floatingButton?.destroy()
     }
