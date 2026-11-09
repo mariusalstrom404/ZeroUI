@@ -23,16 +23,16 @@ object CommandBridge {
     enum class Status { STARTED, FINISHED }
 
     private var service: MyAccessibilityService? = null
-    private var replyListener: ((String) -> Unit)? = null
+    private var replyListener: ((String, List<String>) -> Unit)? = null
     private var statusListener: ((Status) -> Unit)? = null
     private var stopListener: (() -> Boolean)? = null
+    private var awaitingListener: ((Boolean) -> Unit)? = null
     private var answer: CompletableDeferred<String>? = null
-
-    private var feedbackListener: ((String) -> Unit)? = null
 
     val isServiceConnected: Boolean get() = service != null
 
-    fun getForegroundApp(): String? = service?.getActiveForegroundPackage()
+    /** A running automation asked the user something and is waiting for the reply. */
+    val isAwaitingAnswer: Boolean get() = answer != null
 
     // --- Service side ---
 
@@ -40,7 +40,8 @@ object CommandBridge {
 
     fun detachService(s: MyAccessibilityService) { if (service === s) service = null }
 
-    fun postReply(text: String) { replyListener?.invoke(text) }
+    /** Adds [text] to the chat. [choices] are answers shown as buttons under it. */
+    fun postReply(text: String, choices: List<String> = emptyList()) { replyListener?.invoke(text, choices) }
 
     fun postStatus(status: Status) { statusListener?.invoke(status) }
 
@@ -49,9 +50,16 @@ object CommandBridge {
 
     /** Starts waiting for the user's next utterance, which then answers the service, not the chat. */
     fun expectAnswer(): CompletableDeferred<String> =
-        CompletableDeferred<String>().also { answer = it }
+        CompletableDeferred<String>().also {
+            answer = it
+            awaitingListener?.invoke(true)
+        }
 
-    fun clearAnswer(waiting: CompletableDeferred<String>) { if (answer === waiting) answer = null }
+    fun clearAnswer(waiting: CompletableDeferred<String>) {
+        if (answer !== waiting) return
+        answer = null
+        awaitingListener?.invoke(false)
+    }
 
     // --- Client side ---
 
@@ -59,34 +67,38 @@ object CommandBridge {
     fun deliverAnswer(text: String): Boolean {
         val waiting = answer ?: return false
         answer = null
+        awaitingListener?.invoke(false)
         waiting.complete(text)
         return true
     }
 
-    /** Delivers active user feedback to the service during operation. Returns false if service not connected. */
-    fun deliverFeedback(text: String): Boolean {
-        val s = service ?: return false
-        s.receiveFeedback(text)
-        return true
+    /** Stop pressed in the chat: stops a running command, or a request still being understood. */
+    fun requestStop() {
+        val s = service
+        // The service's stop also cancels a request being understood, through postStop.
+        if (s != null) s.stopCurrentCommand() else stopListener?.invoke()
     }
 
+    /** The voice dialog's mic opened or closed; shown on the floating button. */
+    fun reportListening(listening: Boolean) { service?.setListening(listening) }
+
     fun setClient(
-        onReply: (String) -> Unit,
+        onReply: (String, List<String>) -> Unit,
         onStatus: (Status) -> Unit,
         onStop: () -> Boolean,
-        onFeedback: ((String) -> Unit)? = null
+        onAwaitingAnswer: (Boolean) -> Unit = {}
     ) {
         replyListener = onReply
         statusListener = onStatus
         stopListener = onStop
-        feedbackListener = onFeedback
+        awaitingListener = onAwaitingAnswer
     }
 
     fun clearClient() {
         replyListener = null
         statusListener = null
         stopListener = null
-        feedbackListener = null
+        awaitingListener = null
     }
 
     /** Sends parsed commands to the service, in order. Returns false if the service isn't connected. */

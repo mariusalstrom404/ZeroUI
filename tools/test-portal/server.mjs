@@ -18,21 +18,22 @@ function secret(name) {
   return value;
 }
 
+// Same as LlmJson.kt: the instructions never change, and what does goes in the input.
 function buildPrompt(body) {
   const today = body.today;
   if (body.endpoint === "command") {
     return {
       name: "voice_commands",
       schema: JSON.parse(asset("command_schema.json")),
-      instructions: asset("command_prompt.txt").replace("{today}", today),
-      input: body.utterance,
+      instructions: asset("command_prompt.txt"),
+      input: `Today: ${today}\nCommand: ${body.utterance}`,
     };
   }
   return {
     name: "follow_up_answer",
     schema: JSON.parse(asset("answer_schema.json")),
-    instructions: asset("answer_prompt.txt").replace("{today}", today).replace("{slot}", body.slot),
-    input: `Question: ${body.question}\nReply: ${body.answer}`,
+    instructions: asset("answer_prompt.txt"),
+    input: `Today: ${today}\nDetail being collected: ${body.slot}\nQuestion: ${body.question}\nReply: ${body.answer}`,
   };
 }
 
@@ -44,6 +45,9 @@ async function callOpenAi(body) {
     body: JSON.stringify({
       model: secret("OPENAI_MODEL"),
       store: false,
+      prompt_cache_key: `zeroui-${name}`,
+      // Same as the app (OpenAiLlmClient.REASONING_EFFORT); remove if the model rejects it.
+      reasoning: { effort: "low" },
       instructions,
       input,
       text: { format: { type: "json_schema", strict: true, name, schema } },

@@ -11,8 +11,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import com.example.myapplication.Message
-import com.example.myapplication.history.OperationHistoryManager
+import com.example.myapplication.debug.Timing
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.CommandConversation
@@ -27,6 +29,16 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
+ * Owns the one [VoiceViewModel] for the whole process instead of each MainActivity. The dialog is
+ * closed and reopened while automations run (to get out of the app's way, then to ask a question),
+ * and an Activity-scoped ViewModel would lose the chat, a pending follow-up question and the
+ * service's replies each time.
+ */
+object ProcessViewModels : ViewModelStoreOwner {
+    override val viewModelStore = ViewModelStore()
+}
+
+/**
  * Holds the chat messages and connects the UI to [CommandConversation], which understands each
  * utterance. Intents that only concern the chat or a quick reading are answered here; the rest
  * are handed to the accessibility service for execution.
@@ -36,44 +48,54 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     val messages: SnapshotStateList<Message> = mutableStateListOf()
 
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
-    private val conversation = CommandConversation(OpenAiLlmClient(app.assets))
+    private val llm = OpenAiLlmClient(app.assets)
+    private val conversation = CommandConversation(llm)
     private var requestJob: Job? = null
 
     /** True while a command is being understood or run by the service. */
     var isProcessing by mutableStateOf(false)
         private set
 
-    /** Set by the host Activity to route assistant text to text-to-speech. */
-    var speak: (String) -> Unit = {}
+    /** A running automation asked a question and the next reply answers it. */
+    var awaitingAnswer by mutableStateOf(CommandBridge.isAwaitingAnswer)
+        private set
 
-    /** Set by the host Activity to get out of the way once a running automation has its answer. */
+    /**
+     * Set by the host Activity to route assistant text to text-to-speech. With interrupt false it
+     * waits for what is being said, so a turn's sentences are all heard.
+     */
+    var speak: (text: String, interrupt: Boolean) -> Unit = { _, _ -> }
+
+    /**
+     * Set by the host Activity to get out of the way once a running automation has its answer.
+     * The Activity resets it when destroyed, since this ViewModel outlives it.
+     */
     var onAnswered: () -> Unit = {}
 
     init {
+        warmUp()
         loadHistory()
         if (messages.isEmpty()) {
-            messages.add(
-                Message(
-                    "Hey! I'm your assistant. I can handle multiple tasks at once. What should we do?",
-                    false
-                )
-            )
+            messages.add(Message(WELCOME, false, EXAMPLES))
         }
         // Receive replies and per-command lifecycle status directly from the service.
         CommandBridge.setClient(
-            onReply = { onServiceReply(it) },
+            onReply = { text, choices -> onServiceReply(text, choices) },
             onStatus = { isProcessing = it == CommandBridge.Status.STARTED },
-            onStop = { stopRequest() }
+            onStop = { stopRequest() },
+            onAwaitingAnswer = { awaitingAnswer = it }
         )
     }
 
+    /** Saved after every message, so the chat survives the app being closed. Only the latest are kept. */
     private fun saveHistory() {
         val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
         val array = JSONArray()
-        messages.forEach {
+        messages.takeLast(MAX_SAVED_MESSAGES).forEach {
             val obj = JSONObject()
             obj.put("text", it.text)
             obj.put("isUser", it.isUser)
+            if (it.choices.isNotEmpty()) obj.put("choices", JSONArray(it.choices))
             array.put(obj)
         }
         prefs.edit().putString("history", array.toString()).apply()
@@ -87,7 +109,8 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             messages.clear()
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
-                messages.add(Message(obj.getString("text"), obj.getBoolean("isUser")))
+                val choices = obj.optJSONArray("choices")?.let { c -> List(c.length()) { c.getString(it) } } ?: emptyList()
+                messages.add(Message(obj.getString("text"), obj.getBoolean("isUser"), choices))
             }
         } catch (e: Exception) {
             messages.clear()
@@ -107,38 +130,66 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         CommandBridge.clearClient()
     }
 
-    /** Reply received from the accessibility service, which has already read it aloud itself. */
-    fun onServiceReply(text: String) = addAssistant(text, spoken = true)
+    /** Reply received from the accessibility service, which reads aloud what should be heard itself. */
+    fun onServiceReply(text: String, choices: List<String> = emptyList()) =
+        addAssistant(text, spoken = true, choices = choices)
 
-    private fun addAssistant(text: String, spoken: Boolean = false) {
+    /**
+     * Adds an assistant message and reads it aloud, as [speech] when that's shorter than the text
+     * shown. [interrupt] false waits for what's being said instead of cutting it off.
+     */
+    private fun addAssistant(
+        text: String,
+        spoken: Boolean = false,
+        choices: List<String> = emptyList(),
+        interrupt: Boolean = true,
+        speech: String = text
+    ) {
         val last = messages.lastOrNull()
-        if (last != null && !last.isUser && last.text == text) return
-        messages.add(Message(text, false))
-        if (!spoken) speak(text)
+        if (last != null && !last.isUser && last.text == text) {
+            // The same question asked again keeps its buttons.
+            if (choices.isNotEmpty() && last.choices != choices) messages[messages.lastIndex] = last.copy(choices = choices)
+            return
+        }
+        messages.add(Message(text, false, choices))
+        saveHistory()
+        if (!spoken) speak(speech, interrupt)
     }
 
-    fun onUserCommand(userInput: String) {
+    /** Opens the connection to OpenAI now, so the next request doesn't wait for it. */
+    fun warmUp() {
+        scope.launch { llm.warmUp() }
+    }
+
+    fun onUserCommand(input: String) {
+        val userInput = input.trim()
+        if (userInput.isEmpty()) return
         messages.add(Message(userInput, true))
+        saveHistory()
         // A running automation asked a question; this is its answer, not a new command.
         if (CommandBridge.deliverAnswer(userInput)) {
             onAnswered()
-            return
-        }
-        // If an operation is currently processing in the background, deliver as active feedback.
-        if (isProcessing && CommandBridge.deliverFeedback(userInput)) {
-            addAssistant("Received feedback: \"$userInput\"", spoken = false)
             return
         }
         requestJob?.cancel()
         isProcessing = true
         CommandBridge.showUnderstanding(userInput)
         requestJob = scope.launch {
-            val foregroundApp = CommandBridge.getForegroundApp()
-            val turn = conversation.handle(userInput, foregroundApp)
+            val turn = Timing.measure("Understanding the request") { conversation.handle(userInput) }
             isProcessing = false
-            turn.says.forEach { addAssistant(it) }
+            // The first sentence cuts off anything older; the rest wait their turn so all are heard.
+            turn.says.forEachIndexed { i, say ->
+                val choices = if (i == turn.says.lastIndex) turn.choices else emptyList()
+                addAssistant(say, choices = choices, interrupt = i == 0)
+            }
             run(turn.run)
         }
+    }
+
+    /** The stop button in the chat: stops whatever is being understood or run. */
+    fun stop() {
+        if (CommandBridge.isServiceConnected) CommandBridge.requestStop()
+        else if (stopRequest()) addAssistant("Okay, I stopped.")
     }
 
     /** Cancels a request still being understood; returns false if there wasn't one. */
@@ -163,32 +214,24 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun isLocal(intent: AppIntent): Boolean =
         intent === AppIntent.Greeting || intent === AppIntent.SaveHistory ||
-            intent === AppIntent.ClearHistory || intent === AppIntent.ViewOperationHistory ||
-            intent === AppIntent.Battery
+            intent === AppIntent.ClearHistory || intent === AppIntent.Battery
 
     private fun runLocally(intent: AppIntent) {
         when (intent) {
-            AppIntent.Greeting -> {
-                addAssistant("Hi! I'm ZeroUI, your AI voice & automation assistant. Here is what I can do:\n\n" +
-                        " Continuous Operations: Execute multi-step tasks seamlessly in one go.\n" +
-                        " Real-time Active Feedback: Tap 💬 on the floating status bar during execution to correct searches or add operations on the fly.\n" +
-                        " Message Copying: Long-press any chat bubble to copy text.\n" +
-                        " Operation History: Say 'show operation history' to review past actions, or 'clear history'.\n" +
-                        " App Automation: Bookings (Booking.com), Food delivery (FoodGorilla, Foodpanda), Banking (NCCUbank), Social (Throats).\n" +
-                        " Device Control: Flashlight, Volume, Brightness, Screenshot, Camera, Navigation, or Battery.\n\n" +
-                        "How can I help you today?")
-            }
+            AppIntent.Greeting -> addAssistant(
+                "Hi! I'm ZeroUI, your voice assistant. I can control your phone, navigate, check NCCUbank, " +
+                    "order food, find stays on Booking.com and work in most other apps. " +
+                    "Tap an example below, or just say what you need. You can ask for several things at once.",
+                choices = EXAMPLES,
+                // The examples are on screen; reading them all out takes too long.
+                speech = "Hi! I'm ZeroUI. Tap an example, or just tell me what you need."
+            )
             AppIntent.SaveHistory -> {
                 saveHistory()
-                addAssistant("Conversation history has been saved successfully.")
+                addAssistant("Our conversation is saved. I also save it automatically as we go.")
             }
             AppIntent.ClearHistory -> {
                 clearHistory()
-                OperationHistoryManager.clearHistory(getApplication())
-            }
-            AppIntent.ViewOperationHistory -> {
-                val summary = OperationHistoryManager.formatHistorySummary(getApplication())
-                addAssistant(summary)
             }
             AppIntent.Battery -> {
                 val bm = getApplication<Application>()
@@ -206,6 +249,18 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         if (!CommandBridge.submit(commands)) {
             promptEnableAccessibilityService()
         }
+    }
+
+    private companion object {
+        const val MAX_SAVED_MESSAGES = 100
+        const val WELCOME = "Hi! I'm ZeroUI. Tell me what to do, or tap an example to try it."
+        val EXAMPLES = listOf(
+            "Check my battery",
+            "Turn on the flashlight",
+            "Take me to the airport",
+            "Search for pizza on Foodpanda",
+            "Find a hotel in Tokyo on Booking.com"
+        )
     }
 
     private fun promptEnableAccessibilityService() {

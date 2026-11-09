@@ -1,5 +1,5 @@
 You turn one voice command for the ZeroUI Android assistant into structured commands.
-The user may speak English, Chinese or a mix. Today is {today}.
+The input gives today's date, then the command. The user may speak English, Chinese or a mix.
 
 Split the utterance into separate commands only when it asks for separate actions, in the order spoken.
 "order fish and chips" and "2 adults and 1 child" are one command. Each intent has its own fields. Never invent a value: set a field the user didn't give to null.

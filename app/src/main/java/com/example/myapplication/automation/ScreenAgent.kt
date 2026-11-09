@@ -51,20 +51,32 @@ sealed class ScreenAction {
     data object ScrollUp : ScreenAction()
     data object Back : ScreenAction()
     data object Wait : ScreenAction()
-    data class Ask(val question: String?) : ScreenAction()
+    /** [choices] are the options on screen, offered to the user as buttons to tap. */
+    data class Ask(val question: String?, val choices: List<String> = emptyList()) : ScreenAction()
     data class Done(val summary: String?) : ScreenAction()
     data class GiveUp(val reason: String?) : ScreenAction()
 }
 
+/**
+ * One reply of the LLM: [action], then the taps and typing it planned on the same screen. [then]
+ * saves a round trip for each step the LLM doesn't need to see the result of first, such as
+ * closing a popup and then tapping the search box.
+ */
+data class ScreenTurn(val action: ScreenAction, val then: List<ScreenAction> = emptyList())
+
 fun interface ScreenLlm {
     @Throws(LlmUnavailableException::class)
-    suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenAction
+    suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenTurn
 }
 
 /** Reads and acts on the real screen; a fake stands in for it in tests. */
 interface ScreenDevice {
-    /** Waits for the screen to stop changing, then reads it. Ids stay valid until the next read. */
-    suspend fun read(): Screen
+    /**
+     * Waits for the screen to stop changing, then reads it. Ids stay valid until the next read.
+     * [previous] is the screen before an action: if nothing seems to have changed, the read waits
+     * a little longer for a slow app before reporting it unchanged.
+     */
+    suspend fun read(previous: Screen? = null): Screen
     suspend fun tap(id: Int): Boolean
     suspend fun type(id: Int, text: String, submit: Boolean): Boolean
     suspend fun scroll(down: Boolean): Boolean
@@ -74,15 +86,21 @@ interface ScreenDevice {
 
 /** Asks the user something and returns their reply, or null if they didn't answer. */
 fun interface AgentUser {
-    suspend fun ask(question: String): String?
+    /** [choices] are offered as buttons to tap; the user may still say or type anything. */
+    suspend fun ask(question: String, choices: List<String>): String?
 }
 
 /**
  * Works towards a goal in any app, one validated action at a time: read the screen, get one action
  * from the LLM, check it in code, perform it, see whether the screen changed.
  *
+ * There's no limit on the number of steps. A run ends when the LLM says done or gives up, the
+ * screen stops changing, a guarded step is reached, the user declines, or the user taps stop.
+ *
  * The LLM picks elements by number, so it can't invent one. It never decides what is safe: paying
  * and entering private details end the run, and other consequential taps need the user's yes.
+ * Steps it planned ahead ([ScreenTurn.then]) go through the same checks, one at a time, on the
+ * screen as it is when their turn comes.
  */
 class ScreenAgent(
     private val device: ScreenDevice,
@@ -98,24 +116,25 @@ class ScreenAgent(
         data object Declined : Outcome()
         data object NoAnswer : Outcome()
         data class GaveUp(val reason: String?) : Outcome()
-        data object OutOfSteps : Outcome()
         data object Unavailable : Outcome()
     }
 
-    suspend fun run(goal: String, maxSteps: Int = DEFAULT_MAX_STEPS): Outcome {
+    /** A step planned on an earlier screen, with the element it was meant for there. */
+    private class Planned(val action: ScreenAction, val node: ScreenNode)
+
+    suspend fun run(goal: String): Outcome {
         val history = mutableListOf<String>()
+        val planned = ArrayDeque<Planned>()
         var unchanged = 0
         var screen = device.read()
 
-        repeat(maxSteps) {
+        while (true) {
             if (ActionGuard.isPaymentScreen(screen.nodes.mapNotNull { it.label })) {
                 return Outcome.HandedOver("the payment screen")
             }
-            val action = try {
-                llm.nextScreenAction(goal, history.toList(), screen.describe())
-            } catch (e: LlmUnavailableException) {
-                return Outcome.Unavailable
-            }
+            val action = nextPlanned(planned, screen, history)
+                ?: decide(goal, history, screen, planned)
+                ?: return Outcome.Unavailable
 
             val note: String = when (action) {
                 is ScreenAction.Done -> return Outcome.Done(action.summary)
@@ -125,12 +144,12 @@ class ScreenAgent(
                     if (question.isNullOrBlank()) {
                         "ask_user needs a question."
                     } else {
-                        val answer = user.ask(question) ?: return Outcome.NoAnswer
+                        val answer = user.ask(question, action.choices) ?: return Outcome.NoAnswer
                         if (FollowUpRules.read(FollowUpSlot.TEXT, answer) == FollowUpRules.Reading.Cancel) return Outcome.Declined
                         // A question changes nothing on screen, and that isn't being stuck.
                         history += "You asked: $question The user answered: $answer"
                         screen = device.read()
-                        return@repeat
+                        continue
                     }
                 }
                 is ScreenAction.Tap -> {
@@ -143,7 +162,8 @@ class ScreenAgent(
                                 return Outcome.HandedOver(ActionGuard.reason(node.tapLabels) ?: "this step")
                             ActionGuard.Verdict.CONFIRM -> {
                                 val what = ActionGuard.reason(node.tapLabels) ?: node.label ?: "this"
-                                val reply = user.ask("Should I tap “$what”? Say confirm or cancel.") ?: return Outcome.NoAnswer
+                                val reply = user.ask("Should I tap “$what”? Say confirm or cancel.", CONFIRM_CHOICES)
+                                    ?: return Outcome.NoAnswer
                                 // Anything short of a clear yes stops: this can't be taken back.
                                 if (FollowUpRules.confirmation(reply) != FollowUpRules.Confirmation.YES) return Outcome.Declined
                             }
@@ -179,8 +199,10 @@ class ScreenAgent(
                 }
             }
 
-            val after = device.read()
+            val after = device.read(previous = screen)
             if (after.fingerprint == screen.fingerprint) {
+                // The plan counted on this step working; with nothing changed, the LLM decides again.
+                planned.clear()
                 if (++unchanged >= MAX_UNCHANGED) return Outcome.GaveUp("the screen stopped responding")
                 history += "$note The screen did not change."
             } else {
@@ -189,12 +211,66 @@ class ScreenAgent(
             }
             screen = after
         }
-        return Outcome.OutOfSteps
     }
 
-    companion object {
-        const val DEFAULT_MAX_STEPS = 15
-        const val RECOVERY_MAX_STEPS = 10
-        private const val MAX_UNCHANGED = 3
+    /**
+     * Asks the LLM for the next action and queues the steps it planned after it in [planned].
+     * Null when the LLM can't be reached.
+     */
+    private suspend fun decide(goal: String, history: List<String>, screen: Screen, planned: ArrayDeque<Planned>): ScreenAction? {
+        val turn = try {
+            llm.nextScreenAction(goal, history.toList(), screen.describe())
+        } catch (e: LlmUnavailableException) {
+            return null
+        }
+        planned.clear()
+        for (step in turn.then) {
+            val node = screen.node(targetOf(step)) ?: break
+            planned += Planned(step, node)
+        }
+        return turn.action
+    }
+
+    /**
+     * The next planned step, aimed at its element on [screen] (numbers change between reads), or
+     * null when nothing is planned. If its element is gone, the rest of the plan is dropped.
+     */
+    private fun nextPlanned(planned: ArrayDeque<Planned>, screen: Screen, history: MutableList<String>): ScreenAction? {
+        val step = planned.removeFirstOrNull() ?: return null
+        val node = sameElement(step.node, screen)
+        if (node == null) {
+            planned.clear()
+            history += "Your planned next steps were skipped: their element is no longer on screen."
+            return null
+        }
+        return when (val action = step.action) {
+            is ScreenAction.Tap -> action.copy(node = node.id)
+            is ScreenAction.Type -> action.copy(node = node.id)
+            else -> null
+        }
+    }
+
+    private fun targetOf(action: ScreenAction): Int? = when (action) {
+        is ScreenAction.Tap -> action.node
+        is ScreenAction.Type -> action.node
+        else -> null
+    }
+
+    private companion object {
+        const val MAX_UNCHANGED = 3
+        val CONFIRM_CHOICES = listOf("Confirm", "Cancel")
+
+        /**
+         * [old]'s element on [screen]: the one node that looks the same. Among several look-alikes
+         * only one at the same number counts, and an element with no label or id can't be told apart.
+         */
+        fun sameElement(old: ScreenNode, screen: Screen): ScreenNode? {
+            val alike = screen.nodes.filter {
+                it.label == old.label && it.viewId == old.viewId &&
+                    it.editable == old.editable && it.tappable == old.tappable
+            }
+            if (old.label == null && old.viewId == null) return null
+            return alike.singleOrNull() ?: alike.firstOrNull { it.id == old.id }
+        }
     }
 }

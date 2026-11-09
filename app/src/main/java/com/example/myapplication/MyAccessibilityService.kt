@@ -3,7 +3,6 @@ package com.example.myapplication
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
-import android.graphics.PixelFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
@@ -11,14 +10,10 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.provider.Settings
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
-import android.widget.Button
 import com.example.myapplication.automation.AccessibilityScreenDevice
 import com.example.myapplication.automation.ActionGuard
 import com.example.myapplication.automation.AgentUser
@@ -31,26 +26,26 @@ import com.example.myapplication.automation.InstalledApp
 import com.example.myapplication.automation.AppMatcher
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
-import com.example.myapplication.history.OperationHistoryManager
+import com.example.myapplication.debug.Timing
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
-import com.example.myapplication.nlp.CommandConversation
 import com.example.myapplication.nlp.HotelQuery
 import com.example.myapplication.nlp.OpenAiLlmClient
 import com.example.myapplication.nlp.StayDate
+import com.example.myapplication.overlay.FloatingMicButton
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
 import com.example.myapplication.speech.Speaker
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import java.util.ArrayDeque
 import java.util.regex.Pattern
 
 class MyAccessibilityService : AccessibilityService() {
 
-    private var windowManager: WindowManager? = null
-    private var floatingButton: View? = null
+    private var floatingButton: FloatingMicButton? = null
+    /** For the floating button's state: the dialog's mic is open, a request is being understood, chains running. */
+    private var listening = false
+    private var understanding = false
+    private var runningChains = 0
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var currentJob: Job? = null
 
@@ -61,85 +56,21 @@ class MyAccessibilityService : AccessibilityService() {
     private var dumpJob: Job? = null
 
     private var statusIndicator: StatusIndicator? = null
-    private val commandQueue = ArrayDeque<AppIntent>()
-    private var lastUserLanguageIsChinese = false
 
     /** How the command currently being processed ended; set by [fail] and [ask]. */
     private enum class Outcome { OK, NEEDS_INPUT, FAILED }
     private var outcome = Outcome.OK
     private var lastReply: String? = null
 
-    private fun isChineseText(text: String?): Boolean {
-        if (text.isNullOrEmpty()) return false
-        return text.any { it in '\u4e00'..'\u9fa5' }
-    }
-
-    private val llmClient by lazy { OpenAiLlmClient(assets) }
-    private val conversation by lazy { CommandConversation(llmClient) }
-
-    fun getActiveForegroundPackage(): String? = automationEngine.finder.activeForegroundPackage()
-
-    fun receiveFeedback(feedbackText: String) {
-        Log.d("NLPControl", "Received active user feedback: $feedbackText")
-        if (isChineseText(feedbackText)) {
-            lastUserLanguageIsChinese = true
-        }
-        val feedbackMsg = if (lastUserLanguageIsChinese) "正在套用反饋: “$feedbackText”" else "Applying feedback: “$feedbackText”"
-        statusIndicator?.show(Phase.WORKING, "Feedback received", feedbackMsg)
-
-        currentJob?.cancel()
-
-        currentJob = serviceScope.launch {
-            try {
-                val turn = conversation.handle(feedbackText, getActiveForegroundPackage())
-                val newIntents = turn.run.filterNot { it is AppIntent.Unknown }
-
-                if (newIntents.isNotEmpty()) {
-                    for (intent in newIntents.reversed()) {
-                        commandQueue.addFirst(intent)
-                    }
-                    val count = newIntents.size
-                    val msg = if (lastUserLanguageIsChinese) {
-                        "收到反饋，正在對當前畫面執行 $count 個更正操作..."
-                    } else {
-                        "Received feedback, executing $count correction(s) on current screen..."
-                    }
-                    sendReply(msg)
-                    executeCommandChain()
-                } else {
-                    val cleanText = feedbackText.trim()
-                    val clicked = performClickOnText(cleanText, timeoutMs = 2000)
-                    if (clicked) {
-                        val msg = if (lastUserLanguageIsChinese) "已點擊畫面上的 “$cleanText”" else "Clicked “$cleanText” on screen."
-                        sendReply(msg)
-                        statusIndicator?.show(Phase.SUCCESS, "Done", msg)
-                    } else {
-                        val typed = automationEngine.typeIntoApp(cleanText, submit = true, packageName = null, timeoutMs = 3000)
-                        if (typed) {
-                            val msg = if (lastUserLanguageIsChinese) "已在當前畫面輸入 “$cleanText”" else "Typed “$cleanText” on screen."
-                            sendReply(msg)
-                            statusIndicator?.show(Phase.SUCCESS, "Done", msg)
-                        } else {
-                            val msg = if (lastUserLanguageIsChinese) {
-                                "收到反饋 “$cleanText”，但在當前畫面上未找到對應的按鈕或輸入框。"
-                            } else {
-                                "Received feedback “$cleanText”, but couldn't find a matching button or input field on screen."
-                            }
-                            sendReply(msg)
-                            statusIndicator?.show(Phase.ERROR, "Feedback Error", msg)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("NLPControl", "Error applying active feedback", e)
-                val msg = if (lastUserLanguageIsChinese) "處理反饋時發生錯誤" else "Error applying feedback."
-                fail(msg)
-            }
-        }
-    }
-
     object DebugConfig {
-        const val ENABLE_ACCESSIBILITY_TREE_DUMP = true
+        /**
+         * Dumps the foreground app's whole tree to logcat after each screen change. Useful when
+         * writing a script for a new app, but it walks the tree on the main thread while ZeroUI
+         * works, so it's off unless needed.
+         */
+        const val ENABLE_ACCESSIBILITY_TREE_DUMP = false
+        /** Logs every accessibility event; there can be dozens a second. */
+        const val LOG_EVENTS = false
     }
 
     companion object {
@@ -163,23 +94,19 @@ class MyAccessibilityService : AccessibilityService() {
         private const val URI_FG_CHECKOUT = "foodgorilla://app/checkout"
         private const val URI_FG_BUY_NOW = "foodgorilla://api/buy_now"
 
-        private const val APP_START_MS = 1500L
+        /** How long a launched app gets to come to the front before the agent starts anyway. */
+        private const val APP_START_TIMEOUT_MS = 5000L
         private const val ANSWER_TIMEOUT_MS = 60000L
 
         private val UUID_PATTERN =Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 
-    private val _uiEventSignal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val uiEventSignal: SharedFlow<Unit> get() = _uiEventSignal
-
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event?.let {
-            if (it.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-                it.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-            ) {
-                _uiEventSignal.tryEmit(Unit)
+            if (DebugConfig.LOG_EVENTS) {
+                Log.d("ZeroUIAutomation", "event=${it.eventType}, package=${it.packageName}, class=${it.className}")
             }
-            Log.e("ZeroUIAutomation", "event=${it.eventType}, package=${it.packageName}, class=${it.className}")
+            automationEngine.onScreenEvent(it)
 
             // Our own overlays/dialog change constantly while we work; don't dump the tree for them.
             if (DebugConfig.ENABLE_ACCESSIBILITY_TREE_DUMP && it.packageName != packageName) {
@@ -203,13 +130,12 @@ class MyAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         CommandBridge.attachService(this)
         Speaker.init(this)
-        setupFloatingButton()
-        statusIndicator = StatusIndicator(this, getSystemService(WINDOW_SERVICE) as WindowManager)
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        floatingButton = FloatingMicButton(this, windowManager) { startActivity(voiceDialogIntent()) }.also { it.show() }
+        statusIndicator = StatusIndicator(this, windowManager)
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
         statusIndicator?.onStop = { stopCurrentCommand() }
-        statusIndicator?.onFeedback = { /* trigger overlay feedback */ }
-        statusIndicator?.onFeedbackSubmit = { feedbackText -> receiveFeedback(feedbackText) }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
     }
@@ -217,26 +143,43 @@ class MyAccessibilityService : AccessibilityService() {
     /** Entry point invoked by [CommandBridge] with commands the UI has understood and confirmed. */
     fun submitCommands(commands: List<AppIntent>) {
         Log.d("NLPControl", "Service starting chain of ${commands.size}")
-        commandQueue.clear()
-        commandQueue.addAll(commands)
         currentJob?.cancel()
-        currentJob = serviceScope.launch { executeCommandChain() }
+        currentJob = serviceScope.launch { executeCommandChain(commands) }
     }
 
     fun showUnderstanding(utterance: String) {
-        if (isChineseText(utterance)) {
-            lastUserLanguageIsChinese = true
-        }
+        understanding = true
+        refreshFloatingButton()
         statusIndicator?.show(Phase.UNDERSTANDING, "Understanding your request…", "“$utterance”")
     }
 
     /** Takes down the "understanding" state when nothing is left to run for that utterance. */
     fun clearUnderstanding() {
+        understanding = false
+        refreshFloatingButton()
         if (currentJob?.isActive != true) statusIndicator?.hide()
     }
 
-    /** The indicator's stop button: cancels the running command wherever it is. */
-    private fun stopCurrentCommand() {
+    /** The voice dialog's mic opened or closed. */
+    fun setListening(on: Boolean) {
+        listening = on
+        refreshFloatingButton()
+    }
+
+    private fun refreshFloatingButton() {
+        floatingButton?.setState(
+            when {
+                listening -> FloatingMicButton.State.LISTENING
+                understanding || runningChains > 0 -> FloatingMicButton.State.WORKING
+                else -> FloatingMicButton.State.READY
+            }
+        )
+    }
+
+    /** The stop button on the indicator or in the chat: cancels the running command wherever it is. */
+    fun stopCurrentCommand() {
+        understanding = false
+        refreshFloatingButton()
         val stoppedRequest = CommandBridge.postStop()
         val job = currentJob?.takeIf { it.isActive }
         if (job == null && !stoppedRequest) return
@@ -247,54 +190,33 @@ class MyAccessibilityService : AccessibilityService() {
         sendReply("Okay, I stopped.")
     }
 
-    private suspend fun executeCommandChain() {
+    private suspend fun executeCommandChain(commands: List<AppIntent>) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
+        val chainStart = Timing.now()
+        understanding = false
+        runningChains++
+        refreshFloatingButton()
         try {
             var failure: String? = null
             var question: String? = null
-            var stepCount = 0
-
-            while (commandQueue.isNotEmpty()) {
-                val intent = commandQueue.removeFirst()
-                stepCount++
-                val remaining = commandQueue.size
-                val progress = if (remaining > 0 || stepCount > 1) "Step $stepCount (${remaining} remaining)" else null
-
+            for ((index, intent) in commands.withIndex()) {
+                val progress = if (commands.size > 1) "Command ${index + 1} of ${commands.size}" else null
                 processSingleCommand(intent, progress)
-
-                val desc = describe(intent)
-                val statusStr = when (outcome) {
-                    Outcome.OK -> "SUCCESS"
-                    Outcome.FAILED -> "FAILED"
-                    Outcome.NEEDS_INPUT -> "NEEDS_INPUT"
-                }
-                OperationHistoryManager.addRecord(this, desc, desc, statusStr)
-
                 when (outcome) {
                     Outcome.FAILED -> failure = lastReply
                     Outcome.NEEDS_INPUT -> question = lastReply
                     Outcome.OK -> {}
                 }
-
+                // Later commands may depend on this one, so they don't run on top of a failure.
                 if (outcome != Outcome.OK) {
-                    val skipped = commandQueue.size
-                    commandQueue.clear()
-                    if (skipped > 0) {
-                        val msg = if (lastUserLanguageIsChinese) {
-                            "未執行剩餘的 $skipped 個操作。"
-                        } else {
-                            "Did not perform remaining $skipped operation(s)."
-                        }
-                        sendReply(msg)
-                    }
+                    val skipped = commands.size - index - 1
+                    if (skipped > 0) sendReply("I didn't do the $skipped remaining ${if (skipped == 1) "command" else "commands"}.")
                     break
                 }
-
-                if (commandQueue.isNotEmpty()) {
-                    val nextLabel = describe(commandQueue.first())
-                    val waitMsg = if (lastUserLanguageIsChinese) "下一步: $nextLabel" else "Next: $nextLabel"
-                    statusIndicator?.show(Phase.WORKING, "Waiting for screen to settle", waitMsg)
-                    delay(3000)
+                if (index < commands.lastIndex) {
+                    statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${describe(commands[index + 1])}")
+                    // As long as the app takes to finish loading, not a fixed time.
+                    automationEngine.waitForScreenToSettle()
                 }
             }
 
@@ -302,16 +224,15 @@ class MyAccessibilityService : AccessibilityService() {
                 failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
                 question != null -> statusIndicator?.show(Phase.NEEDS_INPUT, "Need more information", question)
                 else -> {
-                    val completionMsg = if (lastUserLanguageIsChinese) {
-                        "已完成一系列操作，請問還有其他需要協助的嗎？"
-                    } else {
-                        "Finished sequence of operations. Anything else I can help with?"
-                    }
-                    statusIndicator?.show(Phase.SUCCESS, "Done", completionMsg)
-                    sendReply(completionMsg)
+                    statusIndicator?.show(Phase.SUCCESS, "Done", lastReply)
+                    // Success replies are spoken by sendReply; say something when there wasn't one.
+                    if (lastReply == null) Speaker.speak("Done.", interrupt = false)
                 }
             }
         } finally {
+            Timing.log("Command chain of ${commands.size}: ${Timing.now() - chainStart} ms")
+            runningChains--
+            refreshFloatingButton()
             CommandBridge.postStatus(CommandBridge.Status.FINISHED)
         }
     }
@@ -322,7 +243,7 @@ class MyAccessibilityService : AccessibilityService() {
         lastReply = null
         statusIndicator?.show(Phase.WORKING, describe(intent), progress)
         try {
-            dispatch(intent)
+            Timing.measure("Command ${intent::class.simpleName}") { dispatch(intent) }
         } catch (e: CancellationException) {
             throw e // replaced by a newer command; that one owns the indicator now
         } catch (e: Exception) {
@@ -352,7 +273,6 @@ class MyAccessibilityService : AccessibilityService() {
         AppIntent.Greeting -> "Saying hello"
         AppIntent.SaveHistory -> "Saving history"
         AppIntent.ClearHistory -> "Clearing history"
-        AppIntent.ViewOperationHistory -> "Showing operation history"
         AppIntent.RepeatLast -> "Repeating your last command"
         AppIntent.TakeScreenshot -> "Taking a screenshot"
         is AppIntent.CameraAction -> "Opening the camera"
@@ -400,7 +320,7 @@ class MyAccessibilityService : AccessibilityService() {
                     val viewIntent = Intent(Intent.ACTION_VIEW, uri).setPackage(NCCUBANK_PKG)
 
                     if (safeStartActivity(viewIntent)) {
-                        sendReply("Initiating transfer of $amount to $recipient.")
+                        note("Initiating transfer of $amount to $recipient.")
                         val success = automationEngine.waitForElement(
                             Selector(text = "Success", exact = true),
                             timeoutMs = 6000,
@@ -495,7 +415,7 @@ class MyAccessibilityService : AccessibilityService() {
                     val item = query.substring(0, fromIndex).trim()
                     val restaurant = query.substring(fromIndex + 6).trim()
 
-                    sendReply("Executing FoodGorilla automation for $item at $restaurant.")
+                    note("Running the FoodGorilla order for $item at $restaurant.")
                     Log.e("ZeroUIAutomation", "FOOD AUTOMATION START: $item at $restaurant")
 
                     val success = foodGorillaAuto.runOrderWorkflow(restaurant, item)
@@ -666,7 +586,7 @@ class MyAccessibilityService : AccessibilityService() {
             // Conversation Management
             AppIntent.Greeting -> {
                 sendReply(
-                    "Hi! I'm ZeroUI, your AI voice & automation assistant. You can use me for continuous multi-step tasks, real-time feedback, operation history, food ordering, banking, social media, or system controls. How can I help?"
+                    "Hi! I'm ZeroUI. You can use me to control your device, navigate, handle banking with NCCUbank, order food, or post on social media. Try saying 'check my balance', 'take a screenshot', or 'repeat'. How can I help?"
                 )
             }
 
@@ -676,11 +596,6 @@ class MyAccessibilityService : AccessibilityService() {
 
             AppIntent.ClearHistory -> {
                 sendReply("I've cleared the conversation history.")
-            }
-
-            AppIntent.ViewOperationHistory -> {
-                val summary = OperationHistoryManager.formatHistorySummary(this)
-                sendReply(summary)
             }
 
             // CommandConversation expands a repeat before anything reaches the service.
@@ -757,7 +672,7 @@ class MyAccessibilityService : AccessibilityService() {
                         if (pkg == null) {
                             fail("I couldn't find an app named ${intent.app}.")
                         } else {
-                            sendReply("Looking for ${intent.item} from $restaurant on ${intent.app}.")
+                            note("Looking for ${intent.item} from $restaurant on ${intent.app}.")
                             when (val result = foodDeliveryAuto.order(pkg, restaurant, intent.item)) {
                                 FoodDeliveryAutomation.Result.ADDED ->
                                     sendReply("I added ${intent.item} from $restaurant to your ${intent.app} cart. Please review it and check out yourself.")
@@ -850,8 +765,9 @@ class MyAccessibilityService : AccessibilityService() {
                 if (intent.app != null && pkg == null) {
                     fail("I couldn't find an app named ${intent.app}.")
                 } else {
-                    if (pkg != null) delay(APP_START_MS)
-                    reportAgent(runAgent(intent.goal, ScreenAgent.DEFAULT_MAX_STEPS))
+                    // As long as the app takes to come up, not a fixed time; the agent's first read waits for it to settle.
+                    if (pkg != null) automationEngine.waitForApp(pkg, APP_START_TIMEOUT_MS)
+                    reportAgent(runAgent(intent.goal))
                 }
             }
 
@@ -862,24 +778,26 @@ class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun runAgent(goal: String, maxSteps: Int): ScreenAgent.Outcome =
-        ScreenAgent(
-            AccessibilityScreenDevice(automationEngine),
-            llmClient,
-            AgentUser { askByVoice(it) },
-            onProgress = { automationEngine.report(it) }
-        ).run(goal, maxSteps)
+    private suspend fun runAgent(goal: String): ScreenAgent.Outcome =
+        Timing.measure("Screen agent run") {
+            ScreenAgent(
+                AccessibilityScreenDevice(automationEngine),
+                OpenAiLlmClient(assets),
+                AgentUser { question, choices -> askByVoice(question, choices) },
+                onProgress = { automationEngine.report(it) }
+            ).run(goal)
+        }
 
     /** The script couldn't finish an order: the agent carries on from whatever is on screen. */
     private suspend fun recoverOrder(intent: AppIntent.AppOrder, restaurant: String, result: FoodDeliveryAutomation.Result) {
         statusIndicator?.show(Phase.WORKING, "Trying another way", "${intent.item} from $restaurant")
         val goal = "In ${intent.app}, add ${intent.item} from $restaurant to the cart. " +
             "If it has required choices, ask me which ones I want. Stop once it's in the cart."
-        when (val outcome = runAgent(goal, ScreenAgent.RECOVERY_MAX_STEPS)) {
+        when (val outcome = runAgent(goal)) {
             is ScreenAgent.Outcome.Done ->
                 sendReply("${outcome.summary ?: "I added it."} Please review your cart and check out yourself.")
             // The script's own message says more than "the language service is unreachable" here.
-            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp, ScreenAgent.Outcome.OutOfSteps ->
+            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp ->
                 when (result) {
                     FoodDeliveryAutomation.Result.NEEDS_OPTIONS ->
                         ask("${intent.item} needs a few choices (like size or toppings). Please pick them on screen, then tap Add to cart.")
@@ -900,7 +818,6 @@ class MyAccessibilityService : AccessibilityService() {
             ScreenAgent.Outcome.Declined -> sendReply("Okay, I stopped there.")
             ScreenAgent.Outcome.NoAnswer -> ask("I didn't get an answer, so I stopped there.")
             is ScreenAgent.Outcome.GaveUp -> fail("I couldn't finish that${outcome.reason?.let { ": $it" } ?: "."}")
-            ScreenAgent.Outcome.OutOfSteps -> fail("That was taking too many steps, so I stopped. Please check the screen.")
             ScreenAgent.Outcome.Unavailable -> fail("I can't reach my language service right now, so I stopped.")
         }
     }
@@ -910,13 +827,18 @@ class MyAccessibilityService : AccessibilityService() {
      * stoppable phase, so the stop button keeps working while waiting. Typing in the dialog also
      * answers, which is the way out if speech recognition fails.
      */
-    private suspend fun askByVoice(question: String): String? {
-        statusIndicator?.show(Phase.WORKING, "Waiting for your answer", question)
-        CommandBridge.postReply(question)
-        Speaker.speakAndWait(question)
+    private suspend fun askByVoice(question: String, choices: List<String> = emptyList()): String? {
+        // At the top, so the pill doesn't cover the dialog's text field and mic.
+        statusIndicator?.show(Phase.WORKING, "Waiting for your answer", question, atTop = true)
+        // Expected from now on, so tapping a choice while the question is still read out answers it.
         val answer = CommandBridge.expectAnswer()
         try {
-            statusIndicator?.showInlineInput()
+            CommandBridge.postReply(question, choices)
+            // The dialog opens while the question is read out instead of after it; the mic only
+            // starts once it has been said, so it doesn't hear ZeroUI's own voice.
+            startActivity(voiceDialogIntent(listen = false))
+            Speaker.speakAndWait(question)
+            if (!answer.isCompleted) startActivity(voiceDialogIntent())
             return withTimeoutOrNull(ANSWER_TIMEOUT_MS) { answer.await() }
                 ?.also { statusIndicator?.show(Phase.WORKING, "Continuing", it) }
         } finally {
@@ -933,7 +855,7 @@ class MyAccessibilityService : AccessibilityService() {
     ) {
         val wanted = stayLabel(checkIn, checkOut)
         val details = listOfNotNull(wanted, guests?.label()).joinToString(", ")
-        sendReply("Searching Booking.com for stays in $destination${if (details.isNotEmpty()) ", $details" else ""}.")
+        note("Searching Booking.com for stays in $destination${if (details.isNotEmpty()) ", $details" else ""}.")
         when (val result = bookingAuto.searchStays(pkg, destination, checkIn, checkOut, guests)) {
             is BookingAutomation.Result.Found -> {
                 val found = result.properties?.let { "Found $it" } ?: "Here are the stays"
@@ -968,7 +890,7 @@ class MyAccessibilityService : AccessibilityService() {
     ) {
         val wanted = stayLabel(checkIn, checkOut)
         val details = listOfNotNull(wanted, guests?.label()).joinToString(", ")
-        sendReply("Booking ${room?.let { "a $it at " } ?: ""}$hotel on Booking.com${if (details.isNotEmpty()) " ($details)" else ""}.")
+        note("Booking ${room?.let { "a $it at " } ?: ""}$hotel on Booking.com${if (details.isNotEmpty()) " ($details)" else ""}.")
         when (val result = bookingAuto.reserve(pkg, hotel, destination, checkIn, checkOut, guests, room)) {
             is BookingAutomation.Result.Reserved -> {
                 val what = result.room ?: "a room"
@@ -1043,6 +965,16 @@ class MyAccessibilityService : AccessibilityService() {
             }
         }
         return null
+    }
+
+    /**
+     * Progress worth seeing in the chat and on the indicator, but not read aloud: speech queued
+     * behind it would lag behind what ZeroUI is actually doing.
+     */
+    private fun note(text: String) {
+        Log.d("NLPControl", "Progress: $text")
+        statusIndicator?.updateDetail(text)
+        CommandBridge.postReply(text)
     }
 
     private fun sendReply(text: String) {
@@ -1193,112 +1125,19 @@ class MyAccessibilityService : AccessibilityService() {
         timeoutMs: Long = 2000
     ): Boolean = automationEngine.clickAny(texts.map { Selector(text = it) }, timeoutMs, packageName)
 
-    private fun setupFloatingButton() {
-        try {
-            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.END
-                x = 0
-                y = 200
-            }
-
-            floatingButton = Button(this).apply {
-                text = "🎤"
-                alpha = 0.7f
-
-                setOnTouchListener(object : View.OnTouchListener {
-                    private var ix = 0
-                    private var iy = 0
-                    private var itx = 0f
-                    private var ity = 0f
-
-                    override fun onTouch(v: View, e: MotionEvent): Boolean {
-                        when (e.action) {
-                            MotionEvent.ACTION_DOWN -> {
-                                ix = params.x
-                                iy = params.y
-                                itx = e.rawX
-                                ity = e.rawY
-                                return true
-                            }
-
-                            MotionEvent.ACTION_MOVE -> {
-                                params.x = ix + (itx - e.rawX).toInt()
-                                params.y = iy + (e.rawY - ity).toInt()
-                                windowManager?.updateViewLayout(floatingButton, params)
-                                return true
-                            }
-
-                            MotionEvent.ACTION_UP -> {
-                                if (
-                                    Math.abs(e.rawX - itx) < 10 &&
-                                    Math.abs(e.rawY - ity) < 10
-                                ) {
-                                    if (currentJob?.isActive == true) {
-                                        statusIndicator?.showInlineInput()
-                                    } else {
-                                        startActivity(
-                                            Intent(
-                                                this@MyAccessibilityService,
-                                                MainActivity::class.java
-                                            ).apply {
-                                                addFlags(
-                                                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                                                            Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                                )
-                                                putExtra("start_voice", true)
-                                            }
-                                        )
-                                    }
-                                }
-                                return true
-                            }
-                        }
-
-                        return false
-                    }
-                })
-            }
-
-            // Keep the overlay clear of the status bar / display cutout when the
-            // system draws edge-to-edge (Android 15+).
-            floatingButton?.setOnApplyWindowInsetsListener { v, insets ->
-                val top = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    insets.getInsets(
-                        android.view.WindowInsets.Type.systemBars() or
-                                android.view.WindowInsets.Type.displayCutout()
-                    ).top
-                } else {
-                    0
-                }
-
-                if (params.y < top) {
-                    params.y = top + 16
-                    windowManager?.updateViewLayout(v, params)
-                }
-
-                insets
-            }
-
-            windowManager?.addView(floatingButton, params)
-        } catch (e: Exception) {
-        }
-    }
+    /**
+     * Brings up the voice dialog and starts listening. SINGLE_TOP hands an open dialog the intent
+     * (MainActivity.onNewIntent) rather than CLEAR_TOP destroying and recreating it.
+     */
+    private fun voiceDialogIntent(listen: Boolean = true) = Intent(this, MainActivity::class.java)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        .putExtra(MainActivity.EXTRA_START_VOICE, listen)
 
     override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
         CommandBridge.detachService(this)
         statusIndicator?.destroy()
-        floatingButton?.let {
-            windowManager?.removeView(it)
-        }
+        floatingButton?.destroy()
     }
 }
