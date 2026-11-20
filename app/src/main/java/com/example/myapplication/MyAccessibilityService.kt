@@ -14,6 +14,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
+import android.widget.Toast
 import com.example.myapplication.automation.AccessibilityScreenDevice
 import com.example.myapplication.automation.ActionGuard
 import com.example.myapplication.automation.AgentUser
@@ -27,6 +28,7 @@ import com.example.myapplication.automation.AppMatcher
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.debug.Timing
+import com.example.myapplication.history.OperationHistoryManager
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.HotelQuery
@@ -36,6 +38,7 @@ import com.example.myapplication.overlay.FloatingMicButton
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
 import com.example.myapplication.speech.Speaker
+import com.example.myapplication.ui.UserPreferences
 import kotlinx.coroutines.*
 import java.util.regex.Pattern
 
@@ -56,6 +59,8 @@ class MyAccessibilityService : AccessibilityService() {
     private var dumpJob: Job? = null
 
     private var statusIndicator: StatusIndicator? = null
+    private var activeUtterance: String = ""
+    private var activeDescription: String = ""
 
     /** How the command currently being processed ended; set by [fail] and [ask]. */
     private enum class Outcome { OK, NEEDS_INPUT, FAILED }
@@ -128,23 +133,38 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        UserPreferences.init(this)
         CommandBridge.attachService(this)
         Speaker.init(this)
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        floatingButton = FloatingMicButton(this, windowManager) { startActivity(voiceDialogIntent()) }.also { it.show() }
-        statusIndicator = StatusIndicator(this, windowManager)
+        floatingButton = FloatingMicButton(
+            context = this,
+            windowManager = windowManager,
+            onTap = { startActivity(voiceDialogIntent()) },
+            onHideRequested = {
+                Toast.makeText(this, R.string.floating_hidden_toast, Toast.LENGTH_LONG).show()
+            }
+        ).also { it.show() }
+        statusIndicator = StatusIndicator(this, windowManager).apply {
+            onStop = { stopCurrentCommand() }
+            onOpenDialog = { startActivity(voiceDialogIntent(listen = false)) }
+        }
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
-        statusIndicator?.onStop = { stopCurrentCommand() }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
     }
 
+    /** Re-applies floating button settings changed in the UI (visibility, auto-dim, position reset). */
+    fun applyOverlayPreferences(resetPosition: Boolean = false) {
+        floatingButton?.applyPreferences(resetPosition)
+    }
+
     /** Entry point invoked by [CommandBridge] with commands the UI has understood and confirmed. */
-    fun submitCommands(commands: List<AppIntent>) {
+    fun submitCommands(commands: List<AppIntent>, utterance: String = "") {
         Log.d("NLPControl", "Service starting chain of ${commands.size}")
         currentJob?.cancel()
-        currentJob = serviceScope.launch { executeCommandChain(commands) }
+        currentJob = serviceScope.launch { executeCommandChain(commands, utterance) }
     }
 
     fun showUnderstanding(utterance: String) {
@@ -184,24 +204,31 @@ class MyAccessibilityService : AccessibilityService() {
         val job = currentJob?.takeIf { it.isActive }
         if (job == null && !stoppedRequest) return
         Log.d("NLPControl", "Stopped by the user")
+        if (job != null && activeDescription.isNotBlank()) {
+            OperationHistoryManager.addRecord(this, activeUtterance, activeDescription, "CANCELLED")
+            CommandBridge.notifyHistoryChanged()
+        }
         job?.cancel()
         Speaker.stop()
         statusIndicator?.show(Phase.STOPPED, "Stopped", "Nothing else will be tapped")
         sendReply("Okay, I stopped.")
     }
 
-    private suspend fun executeCommandChain(commands: List<AppIntent>) {
+    private suspend fun executeCommandChain(commands: List<AppIntent>, utterance: String) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
         val chainStart = Timing.now()
         understanding = false
         runningChains++
+        activeUtterance = utterance
+        activeDescription = commands.joinToString(" → ") { describe(it) }
         refreshFloatingButton()
         try {
             var failure: String? = null
             var question: String? = null
             for ((index, intent) in commands.withIndex()) {
-                val progress = if (commands.size > 1) "Command ${index + 1} of ${commands.size}" else null
-                processSingleCommand(intent, progress)
+                val progress = if (commands.size > 1) "Step ${index + 1} of ${commands.size}" else null
+                val stepPair = if (commands.size > 1) (index + 1) to commands.size else null
+                processSingleCommand(intent, progress, stepPair)
                 when (outcome) {
                     Outcome.FAILED -> failure = lastReply
                     Outcome.NEEDS_INPUT -> question = lastReply
@@ -214,11 +241,24 @@ class MyAccessibilityService : AccessibilityService() {
                     break
                 }
                 if (index < commands.lastIndex) {
-                    statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${describe(commands[index + 1])}")
+                    statusIndicator?.show(
+                        Phase.WORKING,
+                        "Waiting for the screen to settle",
+                        "Next: ${describe(commands[index + 1])}",
+                        stepProgress = (index + 1) to commands.size
+                    )
                     // As long as the app takes to finish loading, not a fixed time.
                     automationEngine.waitForScreenToSettle()
                 }
             }
+
+            val historyStatus = when {
+                failure != null -> "FAILED"
+                question != null -> "NEEDS_INPUT"
+                else -> "SUCCESS"
+            }
+            OperationHistoryManager.addRecord(this, utterance, activeDescription, historyStatus)
+            CommandBridge.notifyHistoryChanged()
 
             when {
                 failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
@@ -232,16 +272,22 @@ class MyAccessibilityService : AccessibilityService() {
         } finally {
             Timing.log("Command chain of ${commands.size}: ${Timing.now() - chainStart} ms")
             runningChains--
+            activeUtterance = ""
+            activeDescription = ""
             refreshFloatingButton()
             CommandBridge.postStatus(CommandBridge.Status.FINISHED)
         }
     }
 
-    private suspend fun processSingleCommand(intent: AppIntent, progress: String? = null) {
+    private suspend fun processSingleCommand(
+        intent: AppIntent,
+        progress: String? = null,
+        stepProgress: Pair<Int, Int>? = null
+    ) {
         Log.d("NLPControl", "Processing: $intent")
         outcome = Outcome.OK
         lastReply = null
-        statusIndicator?.show(Phase.WORKING, describe(intent), progress)
+        statusIndicator?.show(Phase.WORKING, describe(intent), progress, stepProgress = stepProgress)
         try {
             Timing.measure("Command ${intent::class.simpleName}") { dispatch(intent) }
         } catch (e: CancellationException) {
@@ -273,6 +319,7 @@ class MyAccessibilityService : AccessibilityService() {
         AppIntent.Greeting -> "Saying hello"
         AppIntent.SaveHistory -> "Saving history"
         AppIntent.ClearHistory -> "Clearing history"
+        AppIntent.ViewOperationHistory -> "Viewing operation history"
         AppIntent.RepeatLast -> "Repeating your last command"
         AppIntent.TakeScreenshot -> "Taking a screenshot"
         is AppIntent.CameraAction -> "Opening the camera"
@@ -598,6 +645,10 @@ class MyAccessibilityService : AccessibilityService() {
                 sendReply("I've cleared the conversation history.")
             }
 
+            AppIntent.ViewOperationHistory -> {
+                sendReply(OperationHistoryManager.formatHistorySummary(this))
+            }
+
             // CommandConversation expands a repeat before anything reaches the service.
             AppIntent.RepeatLast -> {
                 fail("I don't have a previous command to repeat yet.")
@@ -605,10 +656,15 @@ class MyAccessibilityService : AccessibilityService() {
 
             AppIntent.TakeScreenshot -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    statusIndicator?.hideNow() // keep the indicator out of the screenshot
-                    delay(300)
-                    performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
-                    delay(1000)
+                    statusIndicator?.hideNow() // keep overlays out of the screenshot
+                    floatingButton?.setTemporarilyHidden(true)
+                    try {
+                        delay(300)
+                        performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+                        delay(900)
+                    } finally {
+                        floatingButton?.setTemporarilyHidden(false)
+                    }
                     sendReply("Taking a screenshot for you.")
                 } else {
                     fail("Screenshot requires Android 11 or higher.")
@@ -753,7 +809,7 @@ class MyAccessibilityService : AccessibilityService() {
                     node == null -> fail("I couldn't find “${intent.text}” on screen.")
                     // The user named the button, so other taps are fine, but ZeroUI never pays.
                     ActionGuard.forTap(automationEngine.finder.tapLabels(node)) == ActionGuard.Verdict.BLOCK ->
-                        sendReply("That looks like a payment step, so I left it for you to tap yourself.")
+                        sendReply("That looks like a payment step, so I left it for you to tap yourself.", kind = MessageKind.HANDOVER)
                     automationEngine.click(node) -> sendReply("Clicked on ${intent.text}.")
                     else -> fail("I couldn't tap “${intent.text}”.")
                 }
@@ -814,7 +870,10 @@ class MyAccessibilityService : AccessibilityService() {
         when (outcome) {
             is ScreenAgent.Outcome.Done -> sendReply(outcome.summary ?: "Done.")
             is ScreenAgent.Outcome.HandedOver ->
-                sendReply("I stopped at “${outcome.what}”. I don't pay or enter private details, so nothing has been submitted; please finish this step yourself.")
+                sendReply(
+                    "I stopped at “${outcome.what}”. I don't pay or enter private details, so nothing has been submitted; please finish this step yourself.",
+                    kind = MessageKind.HANDOVER
+                )
             ScreenAgent.Outcome.Declined -> sendReply("Okay, I stopped there.")
             ScreenAgent.Outcome.NoAnswer -> ask("I didn't get an answer, so I stopped there.")
             is ScreenAgent.Outcome.GaveUp -> fail("I couldn't finish that${outcome.reason?.let { ": $it" } ?: "."}")
@@ -974,20 +1033,20 @@ class MyAccessibilityService : AccessibilityService() {
     private fun note(text: String) {
         Log.d("NLPControl", "Progress: $text")
         statusIndicator?.updateDetail(text)
-        CommandBridge.postReply(text)
+        CommandBridge.postReply(text, kind = MessageKind.PROGRESS)
     }
 
-    private fun sendReply(text: String) {
+    private fun sendReply(text: String, kind: MessageKind = MessageKind.NORMAL) {
         Log.d("NLPControl", "Sending reply: $text")
         lastReply = text
         // Spoken here rather than by the UI so errors and questions are heard while another app is in front.
         Speaker.speak(text, interrupt = false)
-        CommandBridge.postReply(text)
+        CommandBridge.postReply(text, kind = kind)
     }
 
     /** Replies and marks the current command as failed (shown as an error on the indicator). */
     private fun fail(text: String) {
-        sendReply(text)
+        sendReply(text, kind = MessageKind.ERROR)
         outcome = Outcome.FAILED
     }
 

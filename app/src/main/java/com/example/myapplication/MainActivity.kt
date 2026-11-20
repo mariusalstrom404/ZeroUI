@@ -1,68 +1,139 @@
 package com.example.myapplication
 
 import android.Manifest
-import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.Gravity
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.lifecycleScope
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.Circle
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.QuestionAnswer
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import com.example.myapplication.history.OperationRecord
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.speech.Speaker
 import com.example.myapplication.speech.SpeechManager
 import com.example.myapplication.ui.ProcessViewModels
+import com.example.myapplication.ui.UserPreferences
 import com.example.myapplication.ui.VoiceViewModel
+import com.example.myapplication.ui.components.AccessibilityGuideDialog
+import com.example.myapplication.ui.components.ChatBubble
+import com.example.myapplication.ui.components.ChoiceChips
+import com.example.myapplication.ui.components.HeardBubble
+import com.example.myapplication.ui.components.HistorySheet
+import com.example.myapplication.ui.components.SettingsSheet
+import com.example.myapplication.ui.components.SetupCard
+import com.example.myapplication.ui.components.TypingIndicator
+import com.example.myapplication.ui.components.VoiceWaveform
+import com.example.myapplication.ui.components.WelcomeSection
+import com.example.myapplication.ui.components.hasMicPermission
+import com.example.myapplication.ui.components.openSettingsSafely
+import com.example.myapplication.ui.theme.ListeningRed
 import com.example.myapplication.ui.theme.MyApplicationTheme
+import com.example.myapplication.ui.theme.WarningAmber
+import com.example.myapplication.ui.theme.WorkingViolet
 import kotlinx.coroutines.launch
-
-/** One chat message. [choices] are answers shown as buttons under the latest assistant message. */
-data class Message(val text: String, val isUser: Boolean, val choices: List<String> = emptyList())
-
-private val ListeningRed = Color(0xFFE53935)
 
 class MainActivity : ComponentActivity() {
 
@@ -85,8 +156,11 @@ class MainActivity : ComponentActivity() {
     /** Bumped for each request to start listening, including ones arriving at an open dialog. */
     private var voiceRequests by mutableIntStateOf(0)
 
-    /** Bumped on every resume, so the setup card re-checks permissions changed in Settings. */
+    /** Bumped on every resume, so setup & settings re-check permissions changed in Settings. */
     private var resumes by mutableIntStateOf(0)
+
+    /** Inline speech error banner message (replaces ephemeral Toasts). */
+    private var speechErrorMessage by mutableStateOf<String?>(null)
 
     /** Retries used up for the current automation question. */
     private var answerRetries = 0
@@ -97,12 +171,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // A stray tap beside the dialog mustn't close it, above all while an automation waits for an answer.
+        UserPreferences.init(this)
+
+        // Full-width transparent translucent window so our rounded assistant sheet can anchor cleanly at the bottom.
+        window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+        window.setGravity(Gravity.BOTTOM)
         setFinishOnTouchOutside(false)
 
         speech = SpeechManager(this)
         speech.resultListener = {
             answerRetries = 0
+            speechErrorMessage = null
             viewModel.onUserCommand(it)
         }
         speech.errorListener = { onSpeechError(it) }
@@ -116,31 +195,47 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MyApplicationTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    val isListening by speech.isListening.collectAsState()
-                    val partialText by speech.partialText.collectAsState()
-                    val level by speech.level.collectAsState()
-                    ConversationalNLPUI(
-                        modifier = Modifier.padding(innerPadding),
-                        messages = viewModel.messages,
-                        isListening = isListening,
-                        partialText = partialText,
-                        voiceLevel = level,
-                        isProcessing = viewModel.isProcessing,
-                        // While an automation waits for an answer, the mic is needed to give it.
-                        canStop = viewModel.isProcessing && !viewModel.awaitingAnswer,
-                        voiceRequests = voiceRequests,
-                        resumes = resumes,
-                        onStartListening = {
-                            speech.startListening()
-                            // Done while the user speaks, so the request after it starts on an open connection.
-                            viewModel.warmUp()
-                        },
-                        onStopListening = { speech.stopListening() },
-                        onStop = { viewModel.stop() },
-                        onSend = { viewModel.onUserCommand(it) }
-                    )
-                }
+                val isListening by speech.isListening.collectAsState()
+                val partialText by speech.partialText.collectAsState()
+                val level by speech.level.collectAsState()
+                val ttsMuted by UserPreferences.ttsMuted.collectAsState()
+                val pinnedCommands by UserPreferences.pinnedCommands.collectAsState()
+
+                ZeroUIAssistantSheet(
+                    messages = viewModel.messages,
+                    operationHistory = viewModel.operationHistory,
+                    pinnedCommands = pinnedCommands,
+                    isListening = isListening,
+                    partialText = partialText,
+                    voiceLevel = level,
+                    isProcessing = viewModel.isProcessing,
+                    awaitingAnswer = viewModel.awaitingAnswer,
+                    canStop = viewModel.isProcessing && !viewModel.awaitingAnswer,
+                    ttsMuted = ttsMuted,
+                    speechError = speechErrorMessage,
+                    voiceRequests = voiceRequests,
+                    resumes = resumes,
+                    onStartListening = {
+                        speechErrorMessage = null
+                        speech.startListening()
+                        viewModel.warmUp()
+                    },
+                    onStopListening = { speech.stopListening() },
+                    onStop = { viewModel.stop() },
+                    onSend = {
+                        speechErrorMessage = null
+                        viewModel.onUserCommand(it)
+                    },
+                    onToggleMute = {
+                        val muted = UserPreferences.toggleTtsMuted()
+                        if (muted) Speaker.stop()
+                    },
+                    onClearChat = { viewModel.clearHistory(announce = false) },
+                    onClearOperationHistory = { viewModel.clearOperationHistory() },
+                    onTogglePin = { viewModel.togglePinCommand(it) },
+                    onDismissSpeechError = { speechErrorMessage = null },
+                    onMinimize = getOutOfTheWay
+                )
             }
         }
     }
@@ -148,6 +243,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumes++
+        viewModel.refreshOperationHistory()
     }
 
     /** The dialog was already open (e.g. an automation asks a question): listen again without recreating it. */
@@ -156,13 +252,14 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_START_VOICE, false)) {
             answerRetries = 0
+            speechErrorMessage = null
             voiceRequests++
         }
     }
 
     /**
      * An automation waiting for an answer gets one more try by itself when nothing was heard;
-     * otherwise the user is told what went wrong.
+     * otherwise an inline error banner with Retry is shown inside the assistant sheet.
      */
     private fun onSpeechError(error: Int) {
         if (CommandBridge.isAwaitingAnswer && SpeechManager.heardNothing(error) && answerRetries < MAX_ANSWER_RETRIES) {
@@ -173,38 +270,53 @@ class MainActivity : ComponentActivity() {
             }
             return
         }
-        SpeechManager.messageFor(error)?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+        speechErrorMessage = SpeechManager.messageFor(error)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         speech.destroy()
         CommandBridge.reportListening(false)
-        // The ViewModel outlives this Activity; a newer instance may already have set its own.
         if (viewModel.onAnswered === getOutOfTheWay) viewModel.onAnswered = {}
     }
 }
 
 @Composable
-fun ConversationalNLPUI(
-    modifier: Modifier = Modifier,
+fun ZeroUIAssistantSheet(
     messages: List<Message>,
+    operationHistory: List<OperationRecord>,
+    pinnedCommands: List<String>,
     isListening: Boolean,
     partialText: String,
     voiceLevel: Float,
     isProcessing: Boolean,
+    awaitingAnswer: Boolean,
     canStop: Boolean,
+    ttsMuted: Boolean,
+    speechError: String?,
     voiceRequests: Int,
     resumes: Int,
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
     onStop: () -> Unit,
-    onSend: (String) -> Unit
+    onSend: (String) -> Unit,
+    onToggleMute: () -> Unit,
+    onClearChat: () -> Unit,
+    onClearOperationHistory: () -> Unit,
+    onTogglePin: (String) -> Unit,
+    onDismissSpeechError: () -> Unit,
+    onMinimize: () -> Unit
 ) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var inputText by remember { mutableStateOf("") }
+    var showHistorySheet by remember { mutableStateOf(false) }
+    var showSettingsSheet by remember { mutableStateOf(false) }
+    var showAccessibilityGuide by remember { mutableStateOf(false) }
+
     val listState = rememberLazyListState()
     val showHeard = isListening || partialText.isNotBlank()
+    val copiedToastText = stringResource(R.string.copied_feedback)
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -221,354 +333,471 @@ fun ConversationalNLPUI(
         inputText = ""
     }
 
-    // Keeps the newest message, its buttons and the live transcript in view.
     val itemCount = messages.size + (if (isProcessing) 1 else 0) + (if (showHeard) 1 else 0)
     LaunchedEffect(itemCount, messages.lastOrNull()?.choices) {
         if (itemCount == 0) return@LaunchedEffect
         val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-        if (lastVisible >= itemCount - 3) listState.animateScrollToItem(itemCount - 1)
+        if (lastVisible >= itemCount - 3 || itemCount <= 3) {
+            listState.animateScrollToItem((itemCount - 1).coerceAtLeast(0))
+        }
     }
 
     LaunchedEffect(voiceRequests) {
         if (voiceRequests > 0) requestListen()
     }
 
-    Column(
-        modifier = modifier
+    // Outer translucent backdrop: tapping the top dim area minimizes ZeroUI unless an automation awaits a reply.
+    Box(
+        modifier = Modifier
             .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.ime)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                if (!awaitingAnswer) onMinimize()
+            },
+        contentAlignment = Alignment.BottomCenter
     ) {
-        ZeroUIHeader(
-            isListening = isListening,
-            isProcessing = isProcessing,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
-        )
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        SetupCard(resumes = resumes, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+        // Floating rounded assistant sheet (inspired by Gemini / modern AI overlays)
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.84f)
+                .padding(horizontal = 8.dp)
+                .padding(bottom = 8.dp)
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {} // absorb clicks inside the card
+                ),
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            shadowElevation = 16.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
         ) {
-            itemsIndexed(messages) { index, msg ->
-                Column {
-                    ChatBubble(msg)
-                    // Only the latest message's buttons still answer anything.
-                    if (index == messages.lastIndex && !msg.isUser && msg.choices.isNotEmpty() && !showHeard) {
-                        ChoiceChips(msg.choices, onChoice = { send(it) })
-                    }
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Subtle top drag-handle indicator
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(38.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.outlineVariant)
+                    )
                 }
+
+                ZeroUIHeader(
+                    isListening = isListening,
+                    isProcessing = isProcessing,
+                    awaitingAnswer = awaitingAnswer,
+                    ttsMuted = ttsMuted,
+                    hasHistory = operationHistory.isNotEmpty() || pinnedCommands.isNotEmpty(),
+                    onToggleMute = onToggleMute,
+                    onOpenHistory = { showHistorySheet = true },
+                    onOpenSettings = { showSettingsSheet = true },
+                    onMinimize = onMinimize,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+
+                SetupCard(
+                    resumes = resumes,
+                    onOpenAccessibilityGuide = { showAccessibilityGuide = true },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+
+                // Conversation body OR categorized welcome empty state
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                ) {
+                    if (messages.isEmpty() && !showHeard && !isProcessing) {
+                        item(key = "welcome") {
+                            WelcomeSection(
+                                pinnedCommands = pinnedCommands,
+                                onRunCommand = { send(it) },
+                                onUnpinCommand = { onTogglePin(it) }
+                            )
+                        }
+                    } else {
+                        itemsIndexed(messages) { index, msg ->
+                            val isLatestAssistant = index == messages.lastIndex && !msg.isUser && !showHeard
+                            val showInlineConfirm = isLatestAssistant && msg.kind == MessageKind.CONFIRM && msg.choices.isNotEmpty()
+                            Column {
+                                ChatBubble(
+                                    message = msg,
+                                    showConfirmationButtons = showInlineConfirm,
+                                    onConfirmChoice = { send(it) },
+                                    onCopy = {
+                                        clipboard.setText(AnnotatedString(it))
+                                        Toast.makeText(context, copiedToastText, Toast.LENGTH_SHORT).show()
+                                    },
+                                    onRerun = { send(it) }
+                                )
+                                // Regular suggestion / answer chips (CONFIRM cards render dedicated primary/secondary buttons inside the card)
+                                if (isLatestAssistant && msg.kind != MessageKind.CONFIRM && msg.choices.isNotEmpty()) {
+                                    ChoiceChips(msg.choices, onChoice = { send(it) })
+                                }
+                            }
+                        }
+                    }
+                    if (showHeard) item(key = "heard") { HeardBubble(partialText, voiceLevel) }
+                    if (isProcessing) item(key = "typing") { TypingIndicator() }
+                }
+
+                // Active automation awaiting-answer banner (with clear Cancel Task button!)
+                AnimatedVisibility(
+                    visible = awaitingAnswer,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    AwaitingAnswerBanner(
+                        onCancelTask = onStop,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
+
+                // Inline speech error banner (replaces ephemeral Toast)
+                AnimatedVisibility(
+                    visible = speechError != null,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    SpeechErrorBanner(
+                        message = speechError.orEmpty(),
+                        onRetry = {
+                            onDismissSpeechError()
+                            requestListen()
+                        },
+                        onDismiss = onDismissSpeechError,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f))
+
+                InputBar(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    isListening = isListening,
+                    voiceLevel = voiceLevel,
+                    canStop = canStop,
+                    awaitingAnswer = awaitingAnswer,
+                    onMicClick = { if (isListening) onStopListening() else requestListen() },
+                    onStopClick = onStop,
+                    onSendClick = { send(inputText) },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                )
             }
-            if (showHeard) item { HeardBubble(partialText) }
-            if (isProcessing) item { TypingIndicator() }
         }
+    }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    if (showAccessibilityGuide) {
+        AccessibilityGuideDialog(
+            onDismiss = { showAccessibilityGuide = false },
+            onOpenSettings = { openSettingsSafely(context, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        )
+    }
 
-        InputBar(
-            value = inputText,
-            onValueChange = { inputText = it },
-            isListening = isListening,
-            voiceLevel = voiceLevel,
-            canStop = canStop,
-            onMicClick = { if (isListening) onStopListening() else requestListen() },
-            onStopClick = onStop,
-            onSendClick = { send(inputText) },
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+    if (showHistorySheet) {
+        HistorySheet(
+            records = operationHistory,
+            pinnedCommands = pinnedCommands,
+            onDismiss = { showHistorySheet = false },
+            onRunCommand = { send(it) },
+            onTogglePin = onTogglePin,
+            onClearHistory = onClearOperationHistory
+        )
+    }
+
+    if (showSettingsSheet) {
+        SettingsSheet(
+            resumes = resumes,
+            onDismiss = { showSettingsSheet = false },
+            onClearChat = onClearChat,
+            onOpenAccessibilityGuide = {
+                showSettingsSheet = false
+                showAccessibilityGuide = true
+            },
+            onOverlayPrefChanged = { reset ->
+                CommandBridge.refreshOverlayPreferences(resetPosition = reset)
+            }
         )
     }
 }
-
-private fun hasMicPermission(context: Context) =
-    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
 @Composable
-fun ZeroUIHeader(isListening: Boolean, isProcessing: Boolean, modifier: Modifier = Modifier) {
+fun ZeroUIHeader(
+    isListening: Boolean,
+    isProcessing: Boolean,
+    awaitingAnswer: Boolean,
+    ttsMuted: Boolean,
+    hasHistory: Boolean,
+    onToggleMute: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onMinimize: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            Icons.Default.Mic,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(22.dp)
-        )
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.linearGradient(
+                        listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondary)
+                    )
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Rounded.AutoAwesome,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(16.dp)
+            )
+        }
         Spacer(Modifier.width(8.dp))
-        Text(
-            "ZeroUI",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface
-        )
+        Column {
+            Text(
+                stringResource(R.string.app_name),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        StatusChip(isListening = isListening, isProcessing = isProcessing, awaitingAnswer = awaitingAnswer)
+
         Spacer(Modifier.weight(1f))
-        StatusChip(isListening = isListening, isProcessing = isProcessing)
+
+        IconButton(onClick = onToggleMute, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = if (ttsMuted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp,
+                contentDescription = if (ttsMuted) stringResource(R.string.cd_unmute_tts) else stringResource(R.string.cd_mute_tts),
+                tint = if (ttsMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        IconButton(onClick = onOpenHistory, modifier = Modifier.size(36.dp)) {
+            Box {
+                Icon(
+                    imageVector = Icons.Rounded.History,
+                    contentDescription = stringResource(R.string.cd_history),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                if (hasHistory) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
+            }
+        }
+
+        IconButton(onClick = onOpenSettings, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = Icons.Rounded.Settings,
+                contentDescription = stringResource(R.string.cd_settings),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        IconButton(onClick = onMinimize, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = Icons.Rounded.KeyboardArrowDown,
+                contentDescription = stringResource(R.string.cd_minimize),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
+        }
     }
 }
 
 @Composable
-fun StatusChip(isListening: Boolean, isProcessing: Boolean) {
+fun StatusChip(isListening: Boolean, isProcessing: Boolean, awaitingAnswer: Boolean) {
     val (label, chipColor) = when {
-        isListening -> "Listening" to ListeningRed
-        isProcessing -> "Working" to MaterialTheme.colorScheme.tertiary
-        else -> "Ready" to MaterialTheme.colorScheme.primary
+        isListening -> stringResource(R.string.status_listening) to ListeningRed
+        awaitingAnswer -> stringResource(R.string.status_waiting_reply) to WarningAmber
+        isProcessing -> stringResource(R.string.status_working) to WorkingViolet
+        else -> stringResource(R.string.status_ready) to MaterialTheme.colorScheme.primary
     }
 
-    val active = isListening || isProcessing
+    val active = isListening || isProcessing || awaitingAnswer
     val infiniteTransition = rememberInfiniteTransition(label = "status-dot")
     val dotScale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = if (active) 1.6f else 1f,
-        animationSpec = infiniteRepeatable(tween(700, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        targetValue = if (active) 1.55f else 1f,
+        animationSpec = infiniteRepeatable(tween(650, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "dot-scale"
     )
 
     Surface(
-        color = chipColor.copy(alpha = 0.12f),
+        color = chipColor.copy(alpha = 0.13f),
         shape = RoundedCornerShape(50),
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Box(
                 Modifier
-                    .size(7.dp)
+                    .size(6.dp)
                     .scale(dotScale)
                     .background(chipColor, CircleShape)
             )
             Text(
                 label,
                 style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
                 color = chipColor
             )
         }
     }
 }
 
-// ── First-run setup ───────────────────────────────────────────────────────────
+// ── Context & Error Banners ───────────────────────────────────────────────────
 
-/**
- * Lists what ZeroUI still needs (microphone, accessibility service, and optionally system
- * settings for brightness) with a button for each. Shown only while a required one is missing,
- * so users find out before their first command fails rather than after.
- */
 @Composable
-fun SetupCard(resumes: Int, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    var micTick by remember { mutableIntStateOf(0) }
-    val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { micTick++ }
-
-    val mic = remember(resumes, micTick) { hasMicPermission(context) }
-    val service = remember(resumes) { CommandBridge.isServiceConnected }
-    val writeSettings = remember(resumes) { Settings.System.canWrite(context) }
-    if (mic && service) return
-
+private fun AwaitingAnswerBanner(onCancelTask: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer
+        shape = RoundedCornerShape(14.dp),
+        color = WarningAmber.copy(alpha = 0.14f),
+        border = BorderStroke(1.dp, WarningAmber.copy(alpha = 0.45f))
     ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Text(
-                "Finish setting up ZeroUI",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.QuestionAnswer,
+                contentDescription = null,
+                tint = WarningAmber,
+                modifier = Modifier.size(18.dp)
             )
-            SetupRow("Microphone, to hear you", done = mic) {
-                micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.banner_awaiting_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    stringResource(R.string.banner_awaiting_subtitle),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            SetupRow("Accessibility service, to work in other apps", done = service) {
-                openSettings(context, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            TextButton(onClick = onCancelTask, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text(stringResource(R.string.action_cancel_task), color = ListeningRed)
             }
-            SetupRow("Change system settings, for brightness (optional)", done = writeSettings) {
-                openSettings(
-                    context,
-                    Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:${context.packageName}"))
+        }
+    }
+}
+
+@Composable
+private fun SpeechErrorBanner(
+    message: String,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.ErrorOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onRetry, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text(stringResource(R.string.action_retry))
+            }
+            IconButton(onClick = onDismiss, modifier = Modifier.size(30.dp)) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = stringResource(R.string.cd_dismiss),
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }
     }
 }
 
-@Composable
-private fun SetupRow(label: String, done: Boolean, onFix: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            if (done) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
-            contentDescription = if (done) "Done" else "Not done",
-            tint = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.5f),
-            modifier = Modifier.size(18.dp)
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.weight(1f)
-        )
-        if (!done) {
-            TextButton(onClick = onFix, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Turn on") }
-        }
-    }
-}
+// ── Input Bar ─────────────────────────────────────────────────────────────────
 
-private fun openSettings(context: Context, intent: Intent) {
-    try {
-        context.startActivity(intent)
-    } catch (e: Exception) {
-        Toast.makeText(context, "Couldn't open Settings on this device.", Toast.LENGTH_SHORT).show()
-    }
-}
-
-// ── Chat bubbles ───────────────────────────────────────────────────────────────
-
-@Composable
-fun ChatBubble(message: Message) {
-    val isUser = message.isUser
-    val bubbleShape = if (isUser) {
-        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
-    } else {
-        RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp)
-    }
-    val bgColor = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
-    ) {
-        Surface(
-            color = bgColor,
-            shape = bubbleShape,
-            shadowElevation = if (isUser) 2.dp else 1.dp,
-            modifier = Modifier.widthIn(max = 260.dp)
-        ) {
-            Text(
-                text = message.text,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = textColor
-            )
-        }
-    }
-}
-
-/** Answers to the latest question, or example commands, as buttons. A tap sends it like a reply. */
-@Composable
-fun ChoiceChips(choices: List<String>, onChoice: (String) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 6.dp)
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        choices.forEach { choice ->
-            SuggestionChip(
-                onClick = { onChoice(choice) },
-                label = { Text(choice, style = MaterialTheme.typography.labelLarge) },
-                shape = RoundedCornerShape(50)
-            )
-        }
-    }
-}
-
-/** What speech recognition has heard so far, as a faint user bubble that fills in while speaking. */
-@Composable
-fun HeardBubble(partialText: String) {
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-        Surface(
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-            shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp),
-            modifier = Modifier.widthIn(max = 260.dp)
-        ) {
-            Text(
-                text = partialText.ifBlank { "Listening…" },
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                fontStyle = if (partialText.isBlank()) FontStyle.Italic else FontStyle.Normal,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
-            )
-        }
-    }
-}
-
-// ── Processing indicator ───────────────────────────────────────────────────────
-
-@Composable
-fun TypingIndicator() {
-    val infiniteTransition = rememberInfiniteTransition(label = "typing")
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                repeat(3) { index ->
-                    val yOffset by infiniteTransition.animateFloat(
-                        initialValue = 0f,
-                        targetValue = -7f,
-                        animationSpec = infiniteRepeatable(
-                            tween(400, delayMillis = index * 130, easing = FastOutSlowInEasing),
-                            RepeatMode.Reverse
-                        ),
-                        label = "dot$index"
-                    )
-                    Box(
-                        Modifier
-                            .offset(y = yOffset.dp)
-                            .size(8.dp)
-                            .background(
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                CircleShape
-                            )
-                    )
-                }
-            }
-        }
-    }
-}
-
-// ── Input bar ─────────────────────────────────────────────────────────────────
-
-/** Grows with the user's voice while listening, so they can see they're being heard. */
 @Composable
 fun MicButton(isListening: Boolean, voiceLevel: Float, onClick: () -> Unit) {
     val scale by animateFloatAsState(
-        targetValue = if (isListening) 1f + 0.3f * voiceLevel else 1f,
+        targetValue = if (isListening) 1f + 0.24f * voiceLevel else 1f,
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
         label = "mic-level"
     )
     val bgColor by animateColorAsState(
         targetValue = if (isListening) ListeningRed else MaterialTheme.colorScheme.primary,
-        animationSpec = tween(300),
+        animationSpec = tween(250),
         label = "mic-color"
     )
 
     FilledIconButton(
         onClick = onClick,
-        modifier = Modifier.size(44.dp).scale(scale),
-        colors = IconButtonDefaults.filledIconButtonColors(containerColor = bgColor)
+        modifier = Modifier
+            .size(44.dp)
+            .scale(scale),
+        colors = IconButtonDefaults.filledIconButtonColors(
+            containerColor = bgColor,
+            contentColor = Color.White
+        )
     ) {
-        Icon(Icons.Default.Mic, contentDescription = if (isListening) "Stop listening" else "Speak")
+        Icon(
+            Icons.Rounded.Mic,
+            contentDescription = if (isListening) stringResource(R.string.cd_stop_listening) else stringResource(R.string.cd_speak)
+        )
     }
 }
 
@@ -582,7 +811,7 @@ fun StopButton(onClick: () -> Unit) {
             contentColor = MaterialTheme.colorScheme.onErrorContainer
         )
     ) {
-        Icon(Icons.Default.Stop, contentDescription = "Stop")
+        Icon(Icons.Rounded.Stop, contentDescription = stringResource(R.string.cd_stop_task))
     }
 }
 
@@ -593,48 +822,82 @@ fun InputBar(
     isListening: Boolean,
     voiceLevel: Float,
     canStop: Boolean,
+    awaitingAnswer: Boolean,
     onMicClick: () -> Unit,
     onStopClick: () -> Unit,
     onSendClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val borderColor by animateColorAsState(
+        targetValue = when {
+            isListening -> ListeningRed.copy(alpha = 0.6f)
+            awaitingAnswer -> WarningAmber.copy(alpha = 0.65f)
+            else -> MaterialTheme.colorScheme.outlineVariant
+        },
+        animationSpec = tween(220),
+        label = "input-border"
+    )
+
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(28.dp),
-        tonalElevation = 3.dp,
-        color = MaterialTheme.colorScheme.surfaceVariant
+        tonalElevation = 2.dp,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
-            modifier = Modifier.padding(start = 6.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // While a command runs, the mic's place is taken by stop.
             Crossfade(targetState = canStop, label = "mic-or-stop") { stop ->
                 if (stop) StopButton(onStopClick) else MicButton(isListening, voiceLevel, onMicClick)
             }
 
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(10.dp))
 
-            Box(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
-                if (value.isEmpty()) {
+            if (isListening && value.isEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    VoiceWaveform(level = voiceLevel, color = ListeningRed)
                     Text(
-                        if (canStop) "Working on it… tap stop to cancel" else "How can I help?",
+                        stringResource(R.string.heard_listening),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        color = ListeningRed,
+                        fontWeight = FontWeight.Medium
                     )
                 }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { onSendClick() }),
-                    maxLines = 4
-                )
+            } else {
+                Box(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
+                    if (value.isEmpty()) {
+                        val hint = when {
+                            canStop -> stringResource(R.string.input_placeholder_working)
+                            awaitingAnswer -> stringResource(R.string.input_placeholder_answering)
+                            else -> stringResource(R.string.input_placeholder)
+                        }
+                        Text(
+                            hint,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                        )
+                    }
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { onSendClick() }),
+                        maxLines = 4
+                    )
+                }
             }
 
             AnimatedVisibility(
@@ -642,11 +905,18 @@ fun InputBar(
                 enter = fadeIn() + scaleIn(initialScale = 0.8f),
                 exit = fadeOut() + scaleOut(targetScale = 0.8f)
             ) {
-                IconButton(onClick = onSendClick) {
+                FilledIconButton(
+                    onClick = onSendClick,
+                    modifier = Modifier.size(40.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
                     Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = MaterialTheme.colorScheme.primary
+                        Icons.AutoMirrored.Rounded.Send,
+                        contentDescription = stringResource(R.string.cd_send),
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }

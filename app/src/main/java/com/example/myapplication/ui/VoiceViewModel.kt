@@ -14,7 +14,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import com.example.myapplication.Message
+import com.example.myapplication.MessageKind
 import com.example.myapplication.debug.Timing
+import com.example.myapplication.history.OperationHistoryManager
+import com.example.myapplication.history.OperationRecord
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.CommandConversation
@@ -39,18 +42,20 @@ object ProcessViewModels : ViewModelStoreOwner {
 }
 
 /**
- * Holds the chat messages and connects the UI to [CommandConversation], which understands each
- * utterance. Intents that only concern the chat or a quick reading are answered here; the rest
- * are handed to the accessibility service for execution.
+ * Holds the chat messages, operation history, and connects the UI to [CommandConversation], which
+ * understands each utterance. Intents that only concern the chat or a quick reading are answered
+ * here; the rest are handed to the accessibility service for execution.
  */
 class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     val messages: SnapshotStateList<Message> = mutableStateListOf()
+    val operationHistory: SnapshotStateList<OperationRecord> = mutableStateListOf()
 
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private val llm = OpenAiLlmClient(app.assets)
     private val conversation = CommandConversation(llm)
     private var requestJob: Job? = null
+    private var lastUtterance: String = ""
 
     /** True while a command is being understood or run by the service. */
     var isProcessing by mutableStateOf(false)
@@ -73,17 +78,17 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     var onAnswered: () -> Unit = {}
 
     init {
+        UserPreferences.init(app)
         warmUp()
         loadHistory()
-        if (messages.isEmpty()) {
-            messages.add(Message(WELCOME, false, EXAMPLES))
-        }
+        refreshOperationHistory()
         // Receive replies and per-command lifecycle status directly from the service.
         CommandBridge.setClient(
-            onReply = { text, choices -> onServiceReply(text, choices) },
+            onReply = { text, choices, kind -> onServiceReply(text, choices, kind) },
             onStatus = { isProcessing = it == CommandBridge.Status.STARTED },
             onStop = { stopRequest() },
-            onAwaitingAnswer = { awaitingAnswer = it }
+            onAwaitingAnswer = { awaitingAnswer = it },
+            onHistoryChanged = { refreshOperationHistory() }
         )
     }
 
@@ -95,6 +100,8 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             val obj = JSONObject()
             obj.put("text", it.text)
             obj.put("isUser", it.isUser)
+            obj.put("kind", it.kind.name)
+            obj.put("timestamp", it.timestamp)
             if (it.choices.isNotEmpty()) obj.put("choices", JSONArray(it.choices))
             array.put(obj)
         }
@@ -110,18 +117,41 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val choices = obj.optJSONArray("choices")?.let { c -> List(c.length()) { c.getString(it) } } ?: emptyList()
-                messages.add(Message(obj.getString("text"), obj.getBoolean("isUser"), choices))
+                val kind = runCatching { MessageKind.valueOf(obj.optString("kind", MessageKind.NORMAL.name)) }
+                    .getOrDefault(MessageKind.NORMAL)
+                val timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+                val text = obj.getString("text")
+                // Skip legacy initial welcome bubble so the rich empty state can shine when no user chat exists.
+                if (array.length() == 1 && !obj.getBoolean("isUser") && text == LEGACY_WELCOME) continue
+                messages.add(Message(text, obj.getBoolean("isUser"), choices, kind, timestamp))
             }
         } catch (e: Exception) {
             messages.clear()
         }
     }
 
-    private fun clearHistory() {
+    fun clearHistory(announce: Boolean = false) {
         messages.clear()
         val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
         prefs.edit().remove("history").apply()
-        addAssistant("I've cleared our conversation history.")
+        if (announce) {
+            addAssistant("I've cleared our conversation history.")
+        }
+    }
+
+    fun refreshOperationHistory() {
+        val records = OperationHistoryManager.getRecords(getApplication())
+        operationHistory.clear()
+        operationHistory.addAll(records)
+    }
+
+    fun clearOperationHistory() {
+        OperationHistoryManager.clearHistory(getApplication())
+        operationHistory.clear()
+    }
+
+    fun togglePinCommand(command: String) {
+        UserPreferences.togglePinnedCommand(command)
     }
 
     override fun onCleared() {
@@ -131,8 +161,18 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Reply received from the accessibility service, which reads aloud what should be heard itself. */
-    fun onServiceReply(text: String, choices: List<String> = emptyList()) =
-        addAssistant(text, spoken = true, choices = choices)
+    fun onServiceReply(
+        text: String,
+        choices: List<String> = emptyList(),
+        kind: MessageKind = MessageKind.NORMAL
+    ) {
+        val resolvedKind = if (kind == MessageKind.NORMAL && isConfirmChoices(choices)) {
+            MessageKind.CONFIRM
+        } else {
+            kind
+        }
+        addAssistant(text, spoken = true, choices = choices, kind = resolvedKind)
+    }
 
     /**
      * Adds an assistant message and reads it aloud, as [speech] when that's shorter than the text
@@ -143,15 +183,18 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         spoken: Boolean = false,
         choices: List<String> = emptyList(),
         interrupt: Boolean = true,
-        speech: String = text
+        speech: String = text,
+        kind: MessageKind = MessageKind.NORMAL
     ) {
         val last = messages.lastOrNull()
         if (last != null && !last.isUser && last.text == text) {
             // The same question asked again keeps its buttons.
-            if (choices.isNotEmpty() && last.choices != choices) messages[messages.lastIndex] = last.copy(choices = choices)
+            if (choices.isNotEmpty() && last.choices != choices) {
+                messages[messages.lastIndex] = last.copy(choices = choices, kind = kind)
+            }
             return
         }
-        messages.add(Message(text, false, choices))
+        messages.add(Message(text, false, choices, kind = kind))
         saveHistory()
         if (!spoken) speak(speech, interrupt)
     }
@@ -171,6 +214,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             onAnswered()
             return
         }
+        lastUtterance = userInput
         requestJob?.cancel()
         isProcessing = true
         CommandBridge.showUnderstanding(userInput)
@@ -180,9 +224,10 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             // The first sentence cuts off anything older; the rest wait their turn so all are heard.
             turn.says.forEachIndexed { i, say ->
                 val choices = if (i == turn.says.lastIndex) turn.choices else emptyList()
-                addAssistant(say, choices = choices, interrupt = i == 0)
+                val kind = inferKind(say, choices)
+                addAssistant(say, choices = choices, interrupt = i == 0, kind = kind)
             }
-            run(turn.run)
+            run(turn.run, userInput)
         }
     }
 
@@ -200,30 +245,30 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
-    private fun run(intents: List<AppIntent>) {
+    private fun run(intents: List<AppIntent>, utterance: String) {
         val (local, remote) = intents.partition { isLocal(it) }
-        local.forEach { runLocally(it) }
+        local.forEach { runLocally(it, utterance) }
         if (remote.isEmpty()) {
             CommandBridge.clearUnderstanding()
         } else {
             // A task in the app already in front needs this dialog out of its way.
             if (remote.any { it is AppIntent.AppTask && it.app == null }) onAnswered()
-            dispatchToService(remote)
+            dispatchToService(remote, utterance)
         }
     }
 
     private fun isLocal(intent: AppIntent): Boolean =
         intent === AppIntent.Greeting || intent === AppIntent.SaveHistory ||
-            intent === AppIntent.ClearHistory || intent === AppIntent.Battery
+            intent === AppIntent.ClearHistory || intent === AppIntent.ViewOperationHistory ||
+            intent === AppIntent.Battery
 
-    private fun runLocally(intent: AppIntent) {
+    private fun runLocally(intent: AppIntent, utterance: String) {
         when (intent) {
             AppIntent.Greeting -> addAssistant(
                 "Hi! I'm ZeroUI, your voice assistant. I can control your phone, navigate, check NCCUbank, " +
                     "order food, find stays on Booking.com and work in most other apps. " +
                     "Tap an example below, or just say what you need. You can ask for several things at once.",
                 choices = EXAMPLES,
-                // The examples are on screen; reading them all out takes too long.
                 speech = "Hi! I'm ZeroUI. Tap an example, or just tell me what you need."
             )
             AppIntent.SaveHistory -> {
@@ -231,29 +276,50 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                 addAssistant("Our conversation is saved. I also save it automatically as we go.")
             }
             AppIntent.ClearHistory -> {
-                clearHistory()
+                clearHistory(announce = true)
+            }
+            AppIntent.ViewOperationHistory -> {
+                refreshOperationHistory()
+                addAssistant(OperationHistoryManager.formatHistorySummary(getApplication()))
             }
             AppIntent.Battery -> {
                 val bm = getApplication<Application>()
                     .getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                 addAssistant("Your battery is at $level%. ${if (level < 20) "You should charge it soon!" else "You're good to go."}")
+                OperationHistoryManager.addRecord(
+                    getApplication(),
+                    utterance = utterance,
+                    description = "Checked battery ($level%)",
+                    status = "SUCCESS"
+                )
+                refreshOperationHistory()
             }
             else -> {}
         }
     }
 
-    private fun dispatchToService(commands: List<AppIntent>) {
-        // CommandBridge.submit returns false when the accessibility service isn't
-        // connected, giving us reliable delivery feedback the old broadcast lacked.
-        if (!CommandBridge.submit(commands)) {
+    private fun dispatchToService(commands: List<AppIntent>, utterance: String) {
+        if (!CommandBridge.submit(commands, utterance)) {
             promptEnableAccessibilityService()
         }
     }
 
+    private fun isConfirmChoices(choices: List<String>): Boolean =
+        choices.size == 2 &&
+            choices[0].equals("Confirm", ignoreCase = true) &&
+            choices[1].equals("Cancel", ignoreCase = true)
+
+    private fun inferKind(text: String, choices: List<String>): MessageKind = when {
+        isConfirmChoices(choices) -> MessageKind.CONFIRM
+        text.contains("can't reach my language service", ignoreCase = true) ||
+            text.startsWith("Sorry, I didn't understand", ignoreCase = true) -> MessageKind.ERROR
+        else -> MessageKind.NORMAL
+    }
+
     private companion object {
         const val MAX_SAVED_MESSAGES = 100
-        const val WELCOME = "Hi! I'm ZeroUI. Tell me what to do, or tap an example to try it."
+        const val LEGACY_WELCOME = "Hi! I'm ZeroUI. Tell me what to do, or tap an example to try it."
         val EXAMPLES = listOf(
             "Check my battery",
             "Turn on the flashlight",
@@ -264,7 +330,10 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun promptEnableAccessibilityService() {
-        addAssistant("I need the accessibility service enabled to do that. I'll open the settings for you — please turn on ZeroUI.")
+        addAssistant(
+            "I need the accessibility service enabled to do that. I'll open the settings for you — please turn on ZeroUI.",
+            kind = MessageKind.ERROR
+        )
         try {
             val ctx = getApplication<Application>()
             ctx.startActivity(

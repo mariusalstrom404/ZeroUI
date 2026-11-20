@@ -40,7 +40,7 @@ data class LlmAnswer(
 
 interface LlmClient {
     @Throws(LlmUnavailableException::class)
-    suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand>
+    suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String? = null): List<LlmCommand>
 
     /** [slot] names the detail being collected, or "CONFIRMATION" for a yes/no question. */
     @Throws(LlmUnavailableException::class)
@@ -68,7 +68,7 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         return LlmJson.screenTurn(text)
     }
 
-    override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
+    override suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String?): List<LlmCommand> {
         val input = LlmJson.commandInput(today, utterance)
         return LlmJson.commands(post("voice_commands", "command_prompt.txt", "command_schema.json", input), today)
     }

@@ -2,6 +2,7 @@ package com.example.myapplication.overlay
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -19,38 +20,47 @@ import android.widget.ProgressBar
 import android.widget.TextView
 
 /**
- * Floating pill at the bottom of the screen, just above the navigation bar, that tells the user what ZeroUI is doing right now
- * ("Understanding…", "Looking for “Cart”", "Done", errors).
+ * Floating pill at the bottom (or top) of the screen that shows what ZeroUI is doing right now.
  *
- * While a command runs the pill shows a stop button, which calls [onStop]. Only then is the pill
- * touchable; otherwise it is NOT_TOUCHABLE. ZeroUI's own taps and swipes pass through it either
- * way, because the engine calls [setPassThrough] around each gesture. The text is a polite live
- * region, so TalkBack users hear status changes too. All methods may be called from any thread.
+ * Upgraded UX:
+ * - Modern dark glass pill with subtle hairline border and smooth slide + fade transitions.
+ * - Accessible 44dp stop target while a command is running.
+ * - Optional multi-step badge & slim progress bar when executing a command chain (e.g. 1/3).
+ * - Terminal phases (SUCCESS, ERROR, NEEDS_INPUT) can be tapped to open ZeroUI's dialog so users
+ *   can read long replies in full instead of losing truncated lines.
+ * - ZeroUI's own gestures still pass cleanly through via [setPassThrough].
  */
 class StatusIndicator(private val context: Context, private val windowManager: WindowManager) {
 
     enum class Phase(val color: Int, val symbol: String?) {
-        UNDERSTANDING(0xFFC58AF9.toInt(), null),
-        WORKING(0xFF8AB4F8.toInt(), null),
-        SUCCESS(0xFF81C995.toInt(), "✓"),
-        NEEDS_INPUT(0xFFFDD663.toInt(), "?"),
-        ERROR(0xFFF28B82.toInt(), "!"),
-        STOPPED(0xFFBDC1C6.toInt(), "■");
+        UNDERSTANDING(0xFFA78BFA.toInt(), null),
+        WORKING(0xFF60A5FA.toInt(), null),
+        SUCCESS(0xFF34D399.toInt(), "✓"),
+        NEEDS_INPUT(0xFFFBBF24.toInt(), "?"),
+        ERROR(0xFFF87171.toInt(), "!"),
+        STOPPED(0xFF94A3B8.toInt(), "■");
 
         /** Phases where a command is still running and can be stopped. */
         val stoppable: Boolean get() = symbol == null
+
+        /** Phases where tapping the pill opens the full chat dialog. */
+        val openable: Boolean get() = this == SUCCESS || this == ERROR || this == NEEDS_INPUT
     }
 
     /** Called on the main thread when the user taps the stop button. */
     var onStop: (() -> Unit)? = null
 
+    /** Called on the main thread when the user taps a finished/error pill to view details. */
+    var onOpenDialog: (() -> Unit)? = null
+
     companion object {
-        private const val SUCCESS_HIDE_MS = 3000L
-        private const val NEEDS_INPUT_HIDE_MS = 5000L
-        private const val ERROR_HIDE_MS = 6000L
+        private const val SUCCESS_HIDE_MS = 3500L
+        private const val LONG_SUCCESS_HIDE_MS = 5000L
+        private const val NEEDS_INPUT_HIDE_MS = 5500L
+        private const val ERROR_HIDE_MS = 6500L
         private const val STOPPED_HIDE_MS = 2500L
         private const val FADE_MS = 200L
-        private const val BOTTOM_MARGIN_DP = 12
+        private const val BOTTOM_MARGIN_DP = 14
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -61,11 +71,16 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     private lateinit var spinner: ProgressBar
     private lateinit var badge: TextView
     private lateinit var titleView: TextView
+    private lateinit var stepChip: TextView
     private lateinit var detailView: TextView
-    private lateinit var stopButton: TextView
+    private lateinit var stopButton: FrameLayout
+    private lateinit var chevronView: TextView
+    private lateinit var stepProgressBar: ProgressBar
+
     private var attached = false
-    /** The stop button is showing, so the pill should take touches. */
-    private var stoppable = false
+    private var currentPhase = Phase.WORKING
+    /** The pill currently accepts user touches (either for Stop or Tap-to-view). */
+    private var wantsTouch = false
     /** ZeroUI is dispatching a gesture that must not land on the pill. */
     private var passThrough = false
     /** Bumped on every show so a fade-out that started earlier doesn't remove a newer status. */
@@ -85,32 +100,58 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     }
 
     /**
-     * Shows [phase] with a [title] and optional [detail]. Final phases hide themselves after a few seconds.
-     * With [atTop] the pill sits at the top of the screen instead, e.g. while ZeroUI's dialog is open
-     * for an answer: at the bottom it would cover the dialog's text field and mic button.
+     * Shows [phase] with [title], optional [detail], and optional multi-command [stepProgress]
+     * (`currentStep to totalSteps`). With [atTop] the pill sits at the top of the screen so it
+     * doesn't overlap the dialog's input bar.
      */
-    fun show(phase: Phase, title: String, detail: String? = null, atTop: Boolean = false): Unit = onMain {
+    fun show(
+        phase: Phase,
+        title: String,
+        detail: String? = null,
+        atTop: Boolean = false,
+        stepProgress: Pair<Int, Int>? = null
+    ): Unit = onMain {
         val view = ensureAttached() ?: return@onMain
+        currentPhase = phase
         params.gravity = (if (atTop) Gravity.TOP else Gravity.BOTTOM) or Gravity.CENTER_HORIZONTAL
         updatePosition(view, force = true)
         generation++
         handler.removeCallbacks(hideRunnable)
         view.animate().cancel()
-        view.animate().alpha(1f).setDuration(FADE_MS).start()
+        view.translationY = if (atTop) -dp(8).toFloat() else dp(8).toFloat()
+        view.animate().alpha(1f).translationY(0f).setDuration(FADE_MS).start()
 
         spinner.visibility = if (phase.symbol == null) View.VISIBLE else View.GONE
         spinner.indeterminateTintList = ColorStateList.valueOf(phase.color)
         badge.visibility = if (phase.symbol == null) View.GONE else View.VISIBLE
         badge.text = phase.symbol
         (badge.background as GradientDrawable).setColor(phase.color)
+
         titleView.text = title
         setDetail(detail)
-        stoppable = phase.stoppable
-        stopButton.visibility = if (stoppable) View.VISIBLE else View.GONE
+
+        if (stepProgress != null && stepProgress.second > 1) {
+            val (cur, total) = stepProgress
+            stepChip.visibility = View.VISIBLE
+            stepChip.text = "$cur/$total"
+            stepProgressBar.visibility = View.VISIBLE
+            stepProgressBar.max = total * 100
+            stepProgressBar.progress = (cur * 100).coerceIn(0, total * 100)
+            stepProgressBar.progressTintList = ColorStateList.valueOf(phase.color)
+        } else {
+            stepChip.visibility = View.GONE
+            stepProgressBar.visibility = View.GONE
+        }
+
+        val canStop = phase.stoppable
+        val canOpen = phase.openable && onOpenDialog != null
+        stopButton.visibility = if (canStop) View.VISIBLE else View.GONE
+        chevronView.visibility = if (!canStop && canOpen) View.VISIBLE else View.GONE
+        wantsTouch = canStop || canOpen
         applyTouchability()
 
         val hideAfter = when (phase) {
-            Phase.SUCCESS -> SUCCESS_HIDE_MS
+            Phase.SUCCESS -> if ((detail?.length ?: 0) > 60) LONG_SUCCESS_HIDE_MS else SUCCESS_HIDE_MS
             Phase.NEEDS_INPUT -> NEEDS_INPUT_HIDE_MS
             Phase.ERROR -> ERROR_HIDE_MS
             Phase.STOPPED -> STOPPED_HIDE_MS
@@ -126,7 +167,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
 
     /**
      * While [enabled], the pill ignores touches so a tap or swipe ZeroUI dispatches underneath it
-     * (e.g. a bottom "Add to cart" bar) reaches the app instead of the stop button.
+     * reaches the app instead of the pill.
      */
     fun setPassThrough(enabled: Boolean): Unit = onMain {
         passThrough = enabled
@@ -135,7 +176,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
 
     private fun applyTouchability() {
         val view = root ?: return
-        val touchable = stoppable && !passThrough
+        val touchable = wantsTouch && !passThrough
         val flags = if (touchable) {
             params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         } else {
@@ -205,78 +246,145 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     }
 
     private fun buildView(): LinearLayout {
-        val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.72).toInt()
+        val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.64).toInt()
 
         spinner = ProgressBar(context).apply {
             isIndeterminate = true
-            layoutParams = FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER)
         }
         badge = TextView(context).apply {
             gravity = Gravity.CENTER
-            setTextColor(0xFF202124.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(0xFF0F172A.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             typeface = Typeface.DEFAULT_BOLD
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL }
-            layoutParams = FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         val iconBox = FrameLayout(context).apply {
             addView(spinner)
             addView(badge)
-            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(10) }
+            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) }
         }
 
         titleView = TextView(context).apply {
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.DEFAULT_BOLD
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             maxWidth = maxTextWidth
         }
+
+        stepChip = TextView(context).apply {
+            setTextColor(0xFFCBD5E1.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(7), dp(2), dp(7), dp(2))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(0x26FFFFFF)
+            }
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(8) }
+        }
+
+        val titleRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(titleView)
+            addView(stepChip)
+        }
+
         detailView = TextView(context).apply {
-            setTextColor(0xFFCFD3D8.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(0xFFCBD5E1.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             maxWidth = maxTextWidth
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(2) }
         }
+
         val texts = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            addView(titleView)
+            addView(titleRow)
             addView(detailView)
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
 
-        stopButton = TextView(context).apply {
-            text = "■"
-            gravity = Gravity.CENTER
-            setTextColor(0xFFFFFFFF.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        // Accessible 44dp stop button with crisp drawn stop square
+        val stopSquare = View(context).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(Color.WHITE)
+            }
+            layoutParams = FrameLayout.LayoutParams(dp(12), dp(12), Gravity.CENTER)
+        }
+        stopButton = FrameLayout(context).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0x33FFFFFF)
+                setColor(0xD9EF4444.toInt())
             }
             contentDescription = "Stop"
             isClickable = true
             isFocusable = true
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(12) }
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(12) }
+            addView(stopSquare)
             setOnClickListener { onStop?.invoke() }
         }
 
-        return LinearLayout(context).apply {
+        chevronView = TextView(context).apply {
+            text = "›"
+            gravity = Gravity.CENTER
+            setTextColor(0xFF94A3B8.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginStart = dp(8) }
+        }
+
+        val mainRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(10), dp(18), dp(10))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(22).toFloat()
-                setColor(0xEB202124.toInt())
-            }
-            elevation = dp(6).toFloat()
             addView(iconBox)
             addView(texts)
             addView(stopButton)
+            addView(chevronView)
+        }
+
+        stepProgressBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = false
+            visibility = View.GONE
+            progressBackgroundTintList = ColorStateList.valueOf(0x33FFFFFF)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(3)
+            ).apply { topMargin = dp(8) }
+        }
+
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(24).toFloat()
+                setColor(0xF0181C24.toInt())
+                setStroke(dp(1), 0x2BFFFFFF)
+            }
+            elevation = dp(8).toFloat()
+            addView(mainRow)
+            addView(stepProgressBar)
+            setOnClickListener {
+                if (currentPhase.openable && !passThrough) {
+                    hide()
+                    onOpenDialog?.invoke()
+                }
+            }
         }
     }
 
@@ -292,14 +400,8 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         }
     }
 
-    /**
-     * Distance from the bottom edge that keeps the pill clear of the navigation bar (3-button bar
-     * or gesture handle). Read from the display's metrics rather than this window's own insets:
-     * once the pill sits above the bar its own bottom inset is 0, which would make it oscillate.
-     */
     private fun bottomOffset(): Int = navigationBarHeight() + dp(BOTTOM_MARGIN_DP)
 
-    /** Distance from the top edge that keeps the pill clear of the status bar and camera cutout. */
     @android.annotation.SuppressLint("DiscouragedApi", "InternalInsetResource")
     private fun topOffset(): Int {
         val bar = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -326,7 +428,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     }
 
     private fun dp(value: Int): Int = (value * density).toInt()
-
 
     private inline fun onMain(crossinline block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else handler.post { block() }
