@@ -49,13 +49,13 @@ class CommandConversation(
         ready.clear()
     }
 
-    suspend fun handle(utterance: String): Turn {
+    suspend fun handle(utterance: String, foregroundApp: String? = null): Turn {
         val says = mutableListOf<String>()
         when (val current = waiting) {
             null -> {
-                // Plain system commands are understood on the phone, without waiting for the LLM.
+                // Plain system & daily commands are understood on the phone, without waiting for the LLM.
                 val commands = fastPath(utterance)?.map { LlmCommand(it) } ?: try {
-                    llm.parseCommand(utterance, today())
+                    llm.parseCommand(utterance, today(), foregroundApp)
                 } catch (e: LlmUnavailableException) {
                     return Turn(listOf(UNAVAILABLE))
                 }
@@ -193,6 +193,8 @@ class CommandConversation(
 
     private fun choicesFor(slot: FollowUpSlot): List<String> = when (slot) {
         FollowUpSlot.MODE -> listOf("Bus", "Walking", "Driving")
+        FollowUpSlot.ALARM_TIME -> listOf("07:00", "07:30", "08:00", "09:00")
+        FollowUpSlot.DURATION -> listOf("3 分鐘", "5 分鐘", "10 分鐘", "15 分鐘")
         else -> emptyList()
     }
 

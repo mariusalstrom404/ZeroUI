@@ -19,7 +19,7 @@ import android.view.accessibility.AccessibilityWindowInfo
  * - only considers nodes that are visible on screen;
  * - ranks all candidates instead of taking the first substring hit.
  */
-class NodeFinder(private val service: AccessibilityService) {
+class NodeFinder(val service: AccessibilityService) {
 
     companion object {
         private const val COMPOSE_TEST_TAG_KEY = "androidx.compose.ui.semantics.testTag"
@@ -47,6 +47,9 @@ class NodeFinder(private val service: AccessibilityService) {
         }
         return result
     }
+
+    /** Package name of the active top-most application window (excluding ZeroUI itself). */
+    fun activeForegroundPackage(): String? = roots().firstOrNull()?.packageName?.toString()
 
     private fun accepts(root: AccessibilityNodeInfo, own: String, packageName: String?): Boolean {
         val pkg = root.packageName?.toString()
@@ -77,20 +80,49 @@ class NodeFinder(private val service: AccessibilityService) {
         includeOffscreen: Boolean = false
     ): AccessibilityNodeInfo? {
         for (root in roots(packageName)) {
-            val nodes = flatten(root).filter { isCandidate(it, selector, includeOffscreen) }
-            val match = findById(nodes, selector)
-                ?: selector.contentDescription?.let { target ->
-                    bestTextMatch(nodes, selector.exact) { TextMatch.score(it.contentDescription, target) }
-                }
-                ?: selector.text?.let { target ->
-                    bestTextMatch(nodes, selector.exact) {
-                        maxOf(TextMatch.score(it.text, target), TextMatch.score(it.contentDescription, target), TextMatch.score(hintOf(it), target))
-                    }
-                }
-                ?: findSearchField(nodes, selector)
+            val allNodes = flatten(root)
+            val match = findInNodes(allNodes, selector, includeOffscreen)
             if (match != null) return match
         }
         return null
+    }
+
+    /**
+     * Single-pass lookup across [selectors] (in priority order): flattens each window's tree ONCE
+     * instead of re-traversing the accessibility tree for every selector.
+     */
+    fun findAny(
+        selectors: List<Selector>,
+        packageName: String? = null,
+        includeOffscreen: Boolean = false
+    ): Pair<Selector, AccessibilityNodeInfo>? {
+        if (selectors.isEmpty()) return null
+        for (root in roots(packageName)) {
+            val allNodes = flatten(root)
+            for (selector in selectors) {
+                val match = findInNodes(allNodes, selector, includeOffscreen)
+                if (match != null) return selector to match
+            }
+        }
+        return null
+    }
+
+    private fun findInNodes(
+        allNodes: List<AccessibilityNodeInfo>,
+        selector: Selector,
+        includeOffscreen: Boolean
+    ): AccessibilityNodeInfo? {
+        val nodes = allNodes.filter { isCandidate(it, selector, includeOffscreen) }
+        return findById(nodes, selector)
+            ?: selector.contentDescription?.let { target ->
+                bestTextMatch(nodes, selector.exact) { TextMatch.score(it.contentDescription, target) }
+            }
+            ?: selector.text?.let { target ->
+                bestTextMatch(nodes, selector.exact) {
+                    maxOf(TextMatch.score(it.text, target), TextMatch.score(it.contentDescription, target), TextMatch.score(hintOf(it), target))
+                }
+            }
+            ?: findSearchField(nodes, selector)
     }
 
     private fun isCandidate(node: AccessibilityNodeInfo, selector: Selector, includeOffscreen: Boolean): Boolean {
@@ -247,10 +279,13 @@ class NodeFinder(private val service: AccessibilityService) {
     }
 
     /** Everything a tap on [node] would activate: its own labels and those of its click target. */
-    fun tapLabels(node: AccessibilityNodeInfo): List<String> {
-        val target = clickTarget(node)
-        val inTarget = target?.let { flatten(it) }?.takeIf { it.size <= MAX_LABELLED_TARGET_NODES }.orEmpty()
-        return (listOf(node) + listOfNotNull(target) + inTarget)
+    fun tapLabels(node: AccessibilityNodeInfo): List<String> =
+        tapLabels(node, clickTarget(node))
+
+    /** Overload reusing an already-resolved [cachedTarget] to avoid duplicate ancestor traversal. */
+    fun tapLabels(node: AccessibilityNodeInfo, cachedTarget: AccessibilityNodeInfo?): List<String> {
+        val inTarget = cachedTarget?.let { flatten(it) }?.takeIf { it.size <= MAX_LABELLED_TARGET_NODES }.orEmpty()
+        return (listOf(node) + listOfNotNull(cachedTarget) + inTarget)
             .flatMap { n ->
                 val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) n.hintText else null
                 listOf(n.text.takeUnless { n.isPassword }, n.contentDescription, hint)

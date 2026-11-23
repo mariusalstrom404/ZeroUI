@@ -16,7 +16,7 @@ class CommandConversationTest {
         var parseCalls = 0
         var answerCalls = 0
 
-        override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
+        override suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String?): List<LlmCommand> {
             parseCalls++
             if (unavailable) throw LlmUnavailableException("down")
             return commands
@@ -280,5 +280,27 @@ class CommandConversationTest {
         llm.answer = LlmAnswer(LlmAnswer.Status.FILLED, checkIn = StayDate(2026, 12, 5), checkOut = StayDate(2026, 12, 7))
         assertTrue(say("the first weekend of December").says.single().contains("How many guests"))
         assertEquals(1, llm.answerCalls)
+    }
+
+    @Test
+    fun alarmFollowUpParsesLocallyWithoutLlm() {
+        val askTurn = say("幫我設鬧鐘")
+        assertTrue(askTurn.run.isEmpty())
+        assertTrue(askTurn.choices.isNotEmpty())
+        val doneTurn = say("早上七點半")
+        assertEquals(listOf<AppIntent>(AppIntent.SetAlarm(7, 30)), doneTurn.run)
+        assertEquals(0, llm.parseCalls)
+        assertEquals(0, llm.answerCalls)
+    }
+
+    @Test
+    fun timerFollowUpParsesLocallyWithoutLlm() {
+        val askTurn = say("幫我倒計時")
+        assertTrue(askTurn.run.isEmpty())
+        assertTrue(askTurn.choices.isNotEmpty())
+        val doneTurn = say("10 分鐘")
+        assertEquals(listOf<AppIntent>(AppIntent.SetTimer(600)), doneTurn.run)
+        assertEquals(0, llm.parseCalls)
+        assertEquals(0, llm.answerCalls)
     }
 }

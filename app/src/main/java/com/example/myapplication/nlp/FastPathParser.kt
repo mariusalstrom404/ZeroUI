@@ -1,33 +1,42 @@
 package com.example.myapplication.nlp
 
+import java.util.Locale
+
 /**
- * Understands plain system commands on the phone, without the LLM: screenshots, battery, volume,
- * brightness, switching settings on and off, system actions (home, back, recents, lock…),
- * Settings pages and built-in apps. Such commands then run in milliseconds instead of waiting
- * seconds for the language service, and still work offline.
+ * Understands plain system & daily commands on the phone without waiting for the LLM (<1ms):
+ * screenshots, battery, volume, brightness, switching settings on and off, system actions
+ * (home, back, recents, lock…), Settings pages, built-in apps, Chinese/English device controls,
+ * and Siri-like everyday queries (weather, alarms, countdown timers, current time).
  *
- * It's deliberately strict: the whole utterance has to be understood, or [parse] returns null
- * and the LLM gets it. "turn on wifi and open the calculator" is two fast commands, but
- * "turn on wifi and message Bob" goes to the LLM as a whole, so a chain is never half
- * understood. Anything ambiguous ("turn it up", "toggle the flashlight") also goes to the LLM.
+ * It's deliberately strict for chains: the whole utterance has to be understood, or [parse]
+ * returns null and the LLM gets it.
  */
 object FastPathParser {
 
     /** At most this many commands in one utterance; longer chains go to the LLM. */
     private const val MAX_COMMANDS = 4
 
-    /** The commands in [utterance], in order, or null when it isn't entirely system commands. */
+    /** The commands in [utterance], in order, or null when it isn't entirely fast-path commands. */
     fun parse(utterance: String): List<AppIntent>? {
+        val raw = utterance.trim().trimEnd(*TRAILING_PUNCT).trim()
+        if (raw.isEmpty()) return null
+
+        // Check raw Chinese/Siri structured patterns before English normalization strips colons/Chinese fillers.
+        if (!hasChainConnector(raw)) {
+            singleRaw(raw)?.let { return listOf(it) }
+        }
+
         val text = normalize(utterance)
         if (text.isEmpty()) return null
         // Whole first, so names containing "and" ("date and time settings") aren't split up.
-        single(text)?.let { return listOf(it) }
+        singleNormalized(text, raw)?.let { return listOf(it) }
+
         val parts = text.split(SEPARATOR).map { stripFillers(it) }.filter { it.isNotEmpty() }
         if (parts.isEmpty() || parts.size > MAX_COMMANDS) return null
         val intents = mutableListOf<AppIntent>()
         for (part in parts) {
             val previous = intents.lastOrNull()
-            intents += single(part)
+            intents += singleNormalized(part, part)
                 // "turn on wifi and bluetooth": the second part borrows the first one's verb.
                 ?: (previous as? AppIntent.SystemToggle)?.let { toggle ->
                     SystemSetting.find(part)?.let { AppIntent.SystemToggle(it, toggle.enable) }
@@ -37,10 +46,42 @@ object FastPathParser {
         return intents
     }
 
-    /** One command, or null when [part] isn't one this parser is sure about. */
-    private fun single(part: String): AppIntent? =
+    /** Raw-string matchers that rely on punctuation like ":" (6:45 am) or Chinese characters. */
+    private fun singleRaw(raw: String): AppIntent? {
+        val cleaned = stripPoliteZh(raw)
+        val lower = cleaned.lowercase(Locale.ROOT)
+
+        // Exact Chinese / bilingual high-frequency intents
+        exactZhOrQuick(cleaned, lower)?.let { return it }
+
+        // Explicit Chinese volume/brightness levels
+        VOLUME_SET_ZH.matchEntire(cleaned)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 0..100 }?.let {
+            return AppIntent.Volume(AppIntent.Change.SET, it)
+        }
+        BRIGHTNESS_SET_ZH.matchEntire(cleaned)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 0..100 }?.let {
+            return AppIntent.Brightness(AppIntent.Change.SET, it)
+        }
+
+        // Siri-like Weather, Timer, Alarm (checked before generic openApp)
+        parseWeather(cleaned, lower)?.let { return it }
+        parseTimer(cleaned, lower)?.let { return it }
+        parseAlarm(cleaned, lower)?.let { return it }
+
+        // Navigation & ClickText
+        parseNavigate(cleaned, lower)?.let { return it }
+        parseClickText(cleaned, lower)?.let { return it }
+
+        // Chinese OpenApp ("打開 LINE", "開啟 YouTube")
+        parseOpenAppZh(cleaned, lower)?.let { return it }
+
+        return null
+    }
+
+    /** One command on normalized English text, or null when not confident. */
+    private fun singleNormalized(part: String, raw: String): AppIntent? =
         screenshot(part)
             ?: battery(part)
+            ?: currentTime(part)
             ?: volume(part)
             ?: brightness(part)
             ?: systemAction(part)
@@ -48,6 +89,8 @@ object FastPathParser {
             ?: camera(part)
             ?: systemApp(part)
             ?: toggle(part)
+            ?: quickEnglishMeta(part)
+            ?: openAppEn(part, raw)
 
     // --- Normalising ---
 
@@ -57,7 +100,7 @@ object FastPathParser {
      * Commas are kept: they separate commands.
      */
     fun normalize(utterance: String): String {
-        val words = utterance.lowercase()
+        val words = utterance.lowercase(Locale.ROOT)
             .replace("%", " percent")
             .replace(Regex("['’]"), "")
             .replace(Regex("[-_/]"), " ")
@@ -90,7 +133,23 @@ object FastPathParser {
         return result
     }
 
-    // --- Matchers ---
+    private fun stripPoliteZh(text: String): String {
+        var s = text.trim()
+        var prev: String
+        do {
+            prev = s
+            s = s.replace(LEADING_FILLER_EN, "").replace(LEADING_FILLER_ZH, "").trim()
+        } while (s != prev && s.isNotEmpty())
+        s = s.replace(TRAILING_POLITE_EN, "").replace(TRAILING_POLITE_ZH, "").trim()
+        return s.ifEmpty { text }
+    }
+
+    private fun hasChainConnector(raw: String): Boolean {
+        val lower = raw.lowercase(Locale.ROOT)
+        return listOf(" and ", " then ", ", ", "然後", "並且", "順便").any { lower.contains(it) }
+    }
+
+    // --- English Normalized Matchers ---
 
     private fun screenshot(p: String): AppIntent? = AppIntent.TakeScreenshot.takeIf {
         p.matches(Regex("(?:(?:take|grab|capture|snap|make|get|do) )?(?:screenshot|screen shot|screen capture|screengrab|screen grab)(?: of (?:this|screen|this screen|this page))?")) ||
@@ -101,6 +160,13 @@ object FastPathParser {
     private fun battery(p: String): AppIntent? = AppIntent.Battery.takeIf {
         p.matches(Regex("(?:(?:whats|what is|hows|how is|check|show|show me|tell me|get) )?battery(?: level| percentage| status| life| left| charge)?")) ||
             p.matches(Regex("how much (?:battery|charge)(?: do i have| is left| left| have i got| remaining)?(?: left)?"))
+    }
+
+    private fun currentTime(p: String): AppIntent? = AppIntent.CurrentTime.takeIf {
+        p in setOf(
+            "what time is it", "whats time", "what is time", "current time", "tell me time",
+            "whats date", "what date is it", "what day is it", "todays date"
+        )
     }
 
     private fun volume(p: String): AppIntent? {
@@ -205,11 +271,185 @@ object FastPathParser {
         return SystemSetting.find(target)?.let { AppIntent.SystemToggle(it, enable) }
     }
 
+    private fun quickEnglishMeta(p: String): AppIntent? = when (p) {
+        "check balance", "balance", "wallet balance" -> AppIntent.CheckBalance
+        "show operation history", "operation history" -> AppIntent.ViewOperationHistory
+        "clear history" -> AppIntent.ClearHistory
+        "save history" -> AppIntent.SaveHistory
+        "hi", "hello", "what can you do" -> AppIntent.Greeting
+        "repeat", "repeat last", "one more time" -> AppIntent.RepeatLast
+        else -> null
+    }
+
+    /** Fast-path simple English app launch ("open YouTube") while letting ambiguous phrases ("open the latest email") go to LLM. */
+    private fun openAppEn(normalized: String, raw: String): AppIntent? {
+        val m = Regex("^(?:open|launch|start)\\s+(.+)$", RegexOption.IGNORE_CASE).matchEntire(stripPoliteZh(raw))
+            ?: return null
+        val appName = m.groupValues[1].trim()
+        val lowerName = appName.lowercase(Locale.ROOT)
+        if (appName.isEmpty() || appName.length > 28) return null
+        if (lowerName.split(' ').size > 3) return null
+        if (NON_APP_WORDS.any { Regex("\\b$it\\b").containsMatchIn(lowerName) }) return null
+        if (isComplexAppInstruction(normalized)) return null
+        return AppIntent.OpenApp(appName)
+    }
+
+    // --- Chinese & Siri-like Structured Matchers ---
+
+    private fun exactZhOrQuick(text: String, lower: String): AppIntent? = when {
+        matchAny(lower, "截圖", "螢幕截圖", "屏幕截圖", "抓圖", "截個圖") -> AppIntent.TakeScreenshot
+        matchAny(lower, "打開手電筒", "開手電筒", "開啟手電筒", "開燈", "打開燈") -> AppIntent.Flashlight(true)
+        matchAny(lower, "關閉手電筒", "關手電筒", "關掉手電筒", "關燈", "關掉燈") -> AppIntent.Flashlight(false)
+        matchAny(lower, "檢查電量", "剩餘電量", "電量", "看電量", "還有多少電", "手機電量", "電量多少") -> AppIntent.Battery
+        matchAny(lower, "現在幾點", "現在幾點了", "幾點了", "現在時間", "今天幾號", "今天星期幾", "今天禮拜幾", "今天日期") -> AppIntent.CurrentTime
+        matchAny(lower, "音量調高", "音量大一點", "大聲一點", "大聲點", "調高音量", "音量加", "聲音大一點") -> AppIntent.Volume(AppIntent.Change.UP)
+        matchAny(lower, "音量調低", "音量小一點", "小聲一點", "小聲點", "調低音量", "音量減", "聲音小一點") -> AppIntent.Volume(AppIntent.Change.DOWN)
+        matchAny(lower, "亮度調高", "亮一點", "亮點", "調高亮度", "螢幕亮一點") -> AppIntent.Brightness(AppIntent.Change.UP)
+        matchAny(lower, "亮度調低", "暗一點", "暗點", "調低亮度", "螢幕暗一點") -> AppIntent.Brightness(AppIntent.Change.DOWN)
+        matchAny(lower, "拍照", "照相") -> AppIntent.CameraAction(takePhoto = true)
+        matchAny(lower, "開啟相機", "打開相機", "開相機") -> AppIntent.CameraAction(takePhoto = false)
+        matchAny(lower, "查餘額", "查詢餘額", "看餘額", "查看餘額", "餘額多少", "帳戶餘額") -> AppIntent.CheckBalance
+        matchAny(lower, "查看歷史操作", "操作紀錄", "歷史紀錄", "操作歷史") -> AppIntent.ViewOperationHistory
+        matchAny(lower, "清除歷史", "清除紀錄", "清空紀錄") -> AppIntent.ClearHistory
+        matchAny(lower, "儲存歷史", "保存歷史") -> AppIntent.SaveHistory
+        matchAny(lower, "你好", "哈囉", "嗨", "你能做什麼", "你可以做什麼", "自我介紹") -> AppIntent.Greeting
+        matchAny(lower, "重做一次", "重複", "再做一次") -> AppIntent.RepeatLast
+        matchAny(lower, "回首頁", "回到桌面", "回桌面", "主畫面") -> AppIntent.SystemControl(SystemAction.HOME)
+        matchAny(lower, "返回", "回上一頁", "上一頁") -> AppIntent.SystemControl(SystemAction.BACK)
+        matchAny(lower, "鎖定螢幕", "鎖屏", "關螢幕") -> AppIntent.SystemControl(SystemAction.LOCK_SCREEN)
+        else -> null
+    }
+
+    private fun parseWeather(text: String, lower: String): AppIntent.Weather? {
+        if (!WEATHER_ZH.containsMatchIn(text) && !WEATHER_EN.containsMatchIn(lower)) return null
+        if (lower.startsWith("open ") || text.startsWith("打開") || text.startsWith("開啟")) return null
+
+        val dayOffset = when {
+            text.contains("後天") || text.contains("后天") || lower.contains("day after tomorrow") -> 2
+            text.contains("明天") || text.contains("明日") || lower.contains("tomorrow") -> 1
+            else -> 0
+        }
+        val location = extractWeatherLocation(text, lower)
+        return AppIntent.Weather(location = location, dayOffset = dayOffset)
+    }
+
+    private fun extractWeatherLocation(text: String, lower: String): String? {
+        val inMatch = Regex("\\b(?:in|at|for)\\s+([a-zA-Z\\s]{2,30}?)(?:\\s+(?:today|tomorrow|now|right now))?$", RegexOption.IGNORE_CASE)
+            .find(lower)
+        if (inMatch != null) {
+            val loc = inMatch.groupValues[1].trim()
+            if (loc.isNotEmpty() && loc !in setOf("today", "tomorrow", "the", "my area")) return loc
+        }
+        val stripped = text
+            .replace(Regex("(?:今天|今日|現在|目前|明天|明日|後天|后天)"), "")
+            .replace(Regex("(?:的天氣|天氣|氣溫|溫度|會不會下雨|下雨嗎|如何|怎麼樣|怎樣|好不好|呢|嗎|查|查詢|看|看一下)"), "")
+            .replace(Regex("[的在]"), "")
+            .trim()
+        return stripped.takeIf { it.isNotEmpty() && it.length <= 16 && it.any { ch -> ch.code > 0x2E80 } }
+    }
+
+    private fun parseTimer(text: String, lower: String): AppIntent.SetTimer? {
+        if (!TIMER_ZH.containsMatchIn(text) && !TIMER_EN.containsMatchIn(lower)) return null
+        if (lower.startsWith("open ") || lower.startsWith("show ")) return null
+        val seconds = FollowUpRules.parseDurationSeconds(text)
+        return AppIntent.SetTimer(durationSeconds = seconds)
+    }
+
+    private fun parseAlarm(text: String, lower: String): AppIntent.SetAlarm? {
+        if (!ALARM_ZH.containsMatchIn(text) && !ALARM_EN.containsMatchIn(lower)) return null
+        // Let "open clock" / "show my alarms" be handled by OpenSystemApp(CLOCK).
+        if (lower.startsWith("open ") || lower.startsWith("show ")) return null
+        val parsedTime = FollowUpRules.parseAlarmTime(text)
+        return AppIntent.SetAlarm(hour = parsedTime?.first, minute = parsedTime?.second ?: 0)
+    }
+
+    private fun parseNavigate(text: String, lower: String): AppIntent.Navigate? {
+        // Don't hijack "take me to settings/home/about phone/gallery/..."
+        if (lower.startsWith("take me to ")) {
+            val tail = lower.removePrefix("take me to ").trim()
+            if (tail in setOf("home", "home screen", "settings") ||
+                tail.endsWith(" settings") ||
+                SettingsPage.find(tail) != null ||
+                SystemApp.find(tail) != null
+            ) return null
+        }
+        val destRaw = NAV_EN.matchEntire(text)?.groupValues?.get(1)
+            ?: NAV_ZH.matchEntire(text)?.groupValues?.get(1)
+            ?: return null
+        if (isComplexAppInstruction(lower)) return null
+        val mode = FollowUpRules.travelMode(text)
+        val cleanedDest = destRaw
+            .replace(Regex("\\b(?:by|via)\\s+(?:bus|transit|walking|walk|driving|car)\\b", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("(?:搭公車|坐公車|走路|步行|開車)"), "")
+            .replace(Regex("^the\\s+", RegexOption.IGNORE_CASE), "")
+            .trim()
+        if (cleanedDest.isEmpty() || cleanedDest.length > 50) return null
+        return AppIntent.Navigate(destination = cleanedDest, mode = mode)
+    }
+
+    private fun parseClickText(text: String, lower: String): AppIntent.ClickText? {
+        // Don't hijack "press back"
+        if (lower == "press back" || lower == "press back button") return null
+        val target = CLICK_EN.matchEntire(text)?.groupValues?.get(1)
+            ?: CLICK_ZH.matchEntire(text)?.groupValues?.get(1)
+            ?: return null
+        val clean = target.trim().trim('"', '“', '”', '「', '」')
+        if (clean.isEmpty() || clean.length > 30 || isComplexAppInstruction(lower)) return null
+        return AppIntent.ClickText(clean)
+    }
+
+    private fun parseOpenAppZh(text: String, lower: String): AppIntent? {
+        val openPrefixesZh = listOf("開啟", "打開", "啟動", "開")
+        for (prefix in openPrefixesZh) {
+            if (text.startsWith(prefix)) {
+                val app = text.substring(prefix.length).trim()
+                if (app.isNotEmpty() && app.length <= 24 && !isComplexAppInstruction(lower)) {
+                    return AppIntent.OpenApp(app)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun isComplexAppInstruction(lower: String): Boolean {
+        val complexKeywords = listOf(" and ", "然後", "並且", "搜尋", "搜索", "查", "幫我", " in ", " on ", "並", "找", "訂")
+        return complexKeywords.any { lower.contains(it) }
+    }
+
+    private fun matchAny(text: String, vararg keywords: String): Boolean =
+        keywords.any { text == it || text.replace(" ", "") == it.replace(" ", "") }
+
+    // --- Constants ---
+
+    private val TRAILING_PUNCT = charArrayOf('.', '!', '?', '。', '！', '？', ',', '，', '~', '～')
     private val SEPARATOR = Regex("\\s*,\\s*(?:(?:and then|and also|then|and|also)\\s+)?|\\s+(?:and then|and also|then|and|also)\\s+")
-
     private val DROPPED_WORDS = setOf("the", "my", "a", "an", "your")
-
     private val FLASHLIGHT = setOf("flashlight", "flash light", "torch", "flash")
+    private val NON_APP_WORDS = setOf(
+        "latest", "last", "first", "next", "new", "my", "the", "this", "that",
+        "email", "mail", "message", "file", "document", "link", "page", "tab", "video", "song", "photo"
+    )
+
+    private val LEADING_FILLER_ZH = Regex("^(?:請問|請|幫我|麻煩你|麻煩|可以幫我|能不能幫我|替我|我要|我想|給我|幫我把|把)\\s*")
+    private val LEADING_FILLER_EN = Regex(
+        "^(?:(?:hey|hi|ok|okay)\\s+zeroui[,\\s]+)?(?:(?:please|can you|could you|would you|will you|help me(?: to)?)\\s+)+",
+        RegexOption.IGNORE_CASE
+    )
+    private val TRAILING_POLITE_EN = Regex("\\s+(?:please|for me|now|right now|thanks|thank you)$", RegexOption.IGNORE_CASE)
+    private val TRAILING_POLITE_ZH = Regex("(?:一下|好嗎|好不好|可以嗎|謝謝|吧)$")
+
+    private val VOLUME_SET_ZH = Regex("^(?:音量|聲音)(?:調到|調成|設為|設定為|設成|到)\\s*(\\d{1,3})\\s*%?$")
+    private val BRIGHTNESS_SET_ZH = Regex("^(?:螢幕)?亮度(?:調到|調成|設為|設定為|設成|到)\\s*(\\d{1,3})\\s*%?$")
+    private val NAV_EN = Regex("^(?:navigate|directions|take me|guide me|drive me)\\s+(?:to\\s+)?(.+)$", RegexOption.IGNORE_CASE)
+    private val NAV_ZH = Regex("^(?:導航到|導航去|帶我去|怎麼去|路線到)\\s*(.+)$")
+    private val CLICK_EN = Regex("^(?:tap|click|press)\\s+(?:on\\s+)?(.+)$", RegexOption.IGNORE_CASE)
+    private val CLICK_ZH = Regex("^(?:點擊|點一下|按一下|按下|點)\\s*(.+)$")
+    private val WEATHER_ZH = Regex("(天氣|氣溫|溫度|會不會下雨|下雨嗎)")
+    private val WEATHER_EN = Regex("\\b(?:weather|temperature|forecast)\\b", RegexOption.IGNORE_CASE)
+    private val ALARM_ZH = Regex("(?:鬧鐘|闹钟)")
+    private val ALARM_EN = Regex("\\balarms?\\b", RegexOption.IGNORE_CASE)
+    private val TIMER_ZH = Regex("(?:倒計時|倒計时|倒數|倒数|計時器|计时器|計時|计时)")
+    private val TIMER_EN = Regex("\\b(?:timer|countdown)\\b", RegexOption.IGNORE_CASE)
 
     /** Longest first, so "can you please" goes before "can you". */
     private val PREFIXES = listOf(

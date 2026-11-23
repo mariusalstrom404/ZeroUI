@@ -2,7 +2,9 @@ package com.example.myapplication.nlp
 
 import com.example.myapplication.nlp.AppIntent.Change
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FastPathParserTest {
@@ -21,20 +23,20 @@ class FastPathParserTest {
     fun screenshot() = assertOne(
         AppIntent.TakeScreenshot,
         "take a screenshot", "Screenshot", "Take a screenshot, please.", "capture the screen",
-        "Can you take a screen shot for me?", "grab a screenshot of this page"
+        "Can you take a screen shot for me?", "grab a screenshot of this page", "螢幕截圖"
     )
 
     @Test
     fun battery() = assertOne(
         AppIntent.Battery,
-        "Check my battery", "what's my battery level", "battery", "How much battery do I have left?"
+        "Check my battery", "what's my battery level", "battery", "How much battery do I have left?", "檢查電量"
     )
 
     @Test
     fun volume() {
-        assertOne(AppIntent.Volume(Change.UP), "volume up", "turn up the volume", "louder", "increase the volume")
-        assertOne(AppIntent.Volume(Change.DOWN), "turn the volume down", "quieter", "lower the volume")
-        assertOne(AppIntent.Volume(Change.SET, 40), "set volume to 40%", "volume 40", "set the volume to 40 percent")
+        assertOne(AppIntent.Volume(Change.UP), "volume up", "turn up the volume", "louder", "increase the volume", "大聲一點")
+        assertOne(AppIntent.Volume(Change.DOWN), "turn the volume down", "quieter", "lower the volume", "volume down")
+        assertOne(AppIntent.Volume(Change.SET, 40), "set volume to 40%", "volume 40", "set the volume to 40 percent", "音量調到40%")
         assertOne(AppIntent.Volume(Change.SET, 0), "mute", "mute the sound")
         assertOne(AppIntent.Volume(Change.SET, 100), "max volume")
     }
@@ -43,7 +45,7 @@ class FastPathParserTest {
     fun brightness() {
         assertOne(AppIntent.Brightness(Change.UP), "brightness up", "make the screen brighter", "increase brightness")
         assertOne(AppIntent.Brightness(Change.DOWN), "dim the screen", "lower the brightness", "dimmer")
-        assertOne(AppIntent.Brightness(Change.SET, 70), "set brightness to 70%", "screen brightness 70")
+        assertOne(AppIntent.Brightness(Change.SET, 70), "set brightness to 70%", "screen brightness 70", "亮度調到70%")
         assertOne(AppIntent.Brightness(Change.SET, 100), "full brightness")
     }
 
@@ -52,8 +54,8 @@ class FastPathParserTest {
 
     @Test
     fun flashlight() {
-        assertOne(AppIntent.Flashlight(true), "turn on the flashlight", "torch on", "switch the flashlight on")
-        assertOne(AppIntent.Flashlight(false), "turn off the torch", "flashlight off")
+        assertOne(AppIntent.Flashlight(true), "turn on the flashlight", "torch on", "switch the flashlight on", "打開手電筒")
+        assertOne(AppIntent.Flashlight(false), "turn off the torch", "flashlight off", "turn off flashlight")
         // No way to know the current state here, so let the LLM handle it.
         assertLlm("toggle the flashlight")
     }
@@ -137,21 +139,61 @@ class FastPathParserTest {
     )
 
     @Test
+    fun testHistoryGreetingOpenAppAndNavigate() {
+        assertOne(AppIntent.ViewOperationHistory, "查看歷史操作")
+        assertOne(AppIntent.Greeting, "你好")
+        assertOne(AppIntent.OpenApp("YouTube"), "open YouTube")
+        assertOne(AppIntent.OpenApp("LINE"), "幫我打開 LINE。")
+        assertOne(AppIntent.Navigate("airport", null), "Take me to the airport")
+    }
+
+    @Test
+    fun testSiriLikeWeatherAlarmTimerAndTime() {
+        assertOne(AppIntent.Weather(null, 0), "今天天氣如何？", "what's the weather")
+        assertOne(AppIntent.Weather("台北", 0), "台北今天天氣怎麼樣")
+        assertOne(AppIntent.Weather("高雄", 1), "明天高雄天氣如何")
+        assertOne(AppIntent.Weather("tokyo", 0), "What's the weather in Tokyo?")
+
+        assertOne(AppIntent.SetAlarm(null, 0), "幫我設鬧鐘")
+        assertOne(AppIntent.SetAlarm(7, 30), "幫我設早上七點半的鬧鐘")
+        assertOne(AppIntent.SetAlarm(20, 15), "設晚上8點15分鬧鐘")
+        assertOne(AppIntent.SetAlarm(6, 45), "Set an alarm for 6:45 am")
+
+        assertOne(AppIntent.SetTimer(300), "倒計時5分鐘")
+        assertOne(AppIntent.SetTimer(900), "倒數十五分鐘")
+        assertOne(AppIntent.SetTimer(90), "Set a timer for 1 minute 30 seconds")
+        assertOne(AppIntent.SetTimer(null), "幫我倒計時")
+
+        assertOne(AppIntent.CurrentTime, "現在幾點了？", "What time is it?")
+    }
+
+    @Test
     fun anythingElseGoesToLlm() = assertLlm(
         "",
-        "open youtube",
         "open settings and turn on developer mode for me somehow",
         "turn on wifi and message Bob",
+        "open Foodpanda and search for pizza",
         "transfer 50 to Bob",
         "search for pizza on foodpanda",
         "turn it up",
         "turn on the lights in the kitchen",
         "book a hotel in Taipei",
-        "open the latest email",
-        "what's the weather"
+        "open the latest email"
     )
 
     @Test
     fun tooLongChainGoesToLlm() =
         assertLlm("go home, go back, go home, go back, go home")
+
+    @Test
+    fun testExecutionSpeedSubMillisecond() {
+        val start = System.nanoTime()
+        repeat(100) {
+            assertNotNull(FastPathParser.parse("螢幕截圖"))
+            assertNotNull(FastPathParser.parse("turn on flashlight"))
+            assertNotNull(FastPathParser.parse("查看歷史操作"))
+        }
+        val elapsedMs = (System.nanoTime() - start) / 1_000_000.0
+        assertTrue("300 local parses took ${elapsedMs}ms", elapsedMs < 35.0)
+    }
 }

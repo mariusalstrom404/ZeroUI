@@ -2,8 +2,10 @@ package com.example.myapplication
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
@@ -11,11 +13,13 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.provider.AlarmClock
 import android.provider.Settings
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.util.Log
+import android.widget.Toast
 import com.example.myapplication.automation.AccessibilityScreenDevice
 import com.example.myapplication.automation.ActionGuard
 import com.example.myapplication.automation.AgentUser
@@ -29,6 +33,7 @@ import com.example.myapplication.automation.AppMatcher
 import com.example.myapplication.automation.Selector
 import com.example.myapplication.debug.AccessibilityTreeDumper
 import com.example.myapplication.debug.Timing
+import com.example.myapplication.history.OperationHistoryManager
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.HotelQuery
@@ -40,10 +45,11 @@ import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
 import com.example.myapplication.speech.Speaker
 import com.example.myapplication.speech.SpeechManager
+import com.example.myapplication.system.SystemController
 import com.example.myapplication.ui.ProcessViewModels
+import com.example.myapplication.ui.UserPreferences
 import com.example.myapplication.ui.VoiceViewModel
 import androidx.lifecycle.ViewModelProvider
-import com.example.myapplication.system.SystemController
 import kotlinx.coroutines.*
 import java.util.regex.Pattern
 
@@ -54,9 +60,10 @@ class MyAccessibilityService : AccessibilityService() {
     private var listening = false
     private var understanding = false
     private var runningChains = 0
-    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var currentJob: Job? = null
 
+    private val llmClient by lazy { OpenAiLlmClient(assets) }
     private val automationEngine by lazy { AutomationEngine(this) }
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
     private val foodDeliveryAuto by lazy { FoodDeliveryAutomation(automationEngine) }
@@ -64,7 +71,18 @@ class MyAccessibilityService : AccessibilityService() {
     private val systemController by lazy { SystemController(this, automationEngine) }
     private var dumpJob: Job? = null
 
+    @Volatile private var cachedLauncherApps: List<InstalledApp>? = null
+    private var packageReceiverRegistered = false
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            cachedLauncherApps = null
+            serviceScope.launch(Dispatchers.IO) { launcherApps() }
+        }
+    }
+
     private var statusIndicator: StatusIndicator? = null
+    private var activeUtterance: String = ""
+    private var activeDescription: String = ""
 
     /** Listens in the status pill, for the next request after one is done, while the chat is closed. */
     private val pillSpeechHolder = lazy { createPillSpeech() }
@@ -143,32 +161,74 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        UserPreferences.init(this)
         CommandBridge.attachService(this)
         Speaker.init(this)
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        floatingButton = FloatingMicButton(this, windowManager) { startActivity(voiceDialogIntent()) }.also { it.show() }
-        statusIndicator = StatusIndicator(this, windowManager)
+        floatingButton = FloatingMicButton(
+            context = this,
+            windowManager = windowManager,
+            onTap = { startActivity(voiceDialogIntent()) },
+            onHideRequested = {
+                Toast.makeText(this, R.string.floating_hidden_toast, Toast.LENGTH_LONG).show()
+            }
+        ).also { it.show() }
+        statusIndicator = StatusIndicator(this, windowManager).apply {
+            onStop = { stopCurrentCommand() }
+            onMic = { onPillMic() }
+            onDismiss = {
+                cancelFollowUp()
+                hide()
+            }
+            onOpenChat = {
+                cancelFollowUp()
+                startActivity(voiceDialogIntent(listen = false))
+            }
+        }
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
-        statusIndicator?.onStop = { stopCurrentCommand() }
-        statusIndicator?.onMic = { onPillMic() }
-        statusIndicator?.onDismiss = {
-            cancelFollowUp()
-            statusIndicator?.hide()
-        }
-        statusIndicator?.onOpenChat = {
-            cancelFollowUp()
-            startActivity(voiceDialogIntent(listen = false))
-        }
+        // Warm launcher app cache on IO so the first OpenApp / TypeText doesn't block on PackageManager IPC.
+        registerPackageWatcher()
+        serviceScope.launch(Dispatchers.IO) { launcherApps() }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
     }
 
+    private fun registerPackageWatcher() {
+        if (packageReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(packageReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(packageReceiver, filter)
+            }
+            packageReceiverRegistered = true
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Human-readable name (or package) of the app currently visible underneath ZeroUI. */
+    fun foregroundAppLabel(): String? {
+        val pkg = automationEngine.finder.activeForegroundPackage() ?: return null
+        return cachedLauncherApps?.firstOrNull { it.packageName == pkg }?.label ?: pkg
+    }
+
+    /** Re-applies floating button settings changed in the UI (visibility, auto-dim, position reset). */
+    fun applyOverlayPreferences(resetPosition: Boolean = false) {
+        floatingButton?.applyPreferences(resetPosition)
+    }
+
     /** Entry point invoked by [CommandBridge] with commands the UI has understood and confirmed. */
-    fun submitCommands(commands: List<AppIntent>) {
+    fun submitCommands(commands: List<AppIntent>, utterance: String = "") {
         Log.d("NLPControl", "Service starting chain of ${commands.size}")
         currentJob?.cancel()
-        currentJob = serviceScope.launch { executeCommandChain(commands) }
+        currentJob = serviceScope.launch { executeCommandChain(commands, utterance) }
     }
 
     fun showUnderstanding(utterance: String) {
@@ -208,6 +268,10 @@ class MyAccessibilityService : AccessibilityService() {
         val job = currentJob?.takeIf { it.isActive }
         if (job == null && !stoppedRequest) return
         Log.d("NLPControl", "Stopped by the user")
+        if (job != null && activeDescription.isNotBlank()) {
+            OperationHistoryManager.addRecord(this, activeUtterance, activeDescription, "CANCELLED")
+            CommandBridge.notifyHistoryChanged()
+        }
         job?.cancel()
         cancelFollowUp()
         Speaker.stop()
@@ -215,7 +279,7 @@ class MyAccessibilityService : AccessibilityService() {
         sendReply("Okay, I stopped.")
     }
 
-    private suspend fun executeCommandChain(commands: List<AppIntent>) {
+    private suspend fun executeCommandChain(commands: List<AppIntent>, utterance: String) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
         cancelFollowUp()
         val chainStart = Timing.now()
@@ -223,12 +287,15 @@ class MyAccessibilityService : AccessibilityService() {
         var question: String? = null
         understanding = false
         runningChains++
+        activeUtterance = utterance
+        activeDescription = commands.joinToString(" → ") { describe(it) }
         refreshFloatingButton()
         try {
             var failure: String? = null
             for ((index, intent) in commands.withIndex()) {
-                val progress = if (commands.size > 1) "Command ${index + 1} of ${commands.size}" else null
-                processSingleCommand(intent, progress)
+                val progress = if (commands.size > 1) "Step ${index + 1} of ${commands.size}" else null
+                val stepPair = if (commands.size > 1) (index + 1) to commands.size else null
+                processSingleCommand(intent, progress, stepPair)
                 when (outcome) {
                     Outcome.FAILED -> failure = lastReply
                     Outcome.NEEDS_INPUT -> question = lastReply
@@ -241,11 +308,24 @@ class MyAccessibilityService : AccessibilityService() {
                     break
                 }
                 if (index < commands.lastIndex) {
-                    statusIndicator?.show(Phase.WORKING, "Waiting for the screen to settle", "Next: ${describe(commands[index + 1])}")
+                    statusIndicator?.show(
+                        Phase.WORKING,
+                        "Waiting for the screen to settle",
+                        "Next: ${describe(commands[index + 1])}",
+                        stepProgress = (index + 1) to commands.size
+                    )
                     // As long as the app takes to finish loading, not a fixed time.
                     automationEngine.waitForScreenToSettle()
                 }
             }
+
+            val historyStatus = when {
+                failure != null -> "FAILED"
+                question != null -> "NEEDS_INPUT"
+                else -> "SUCCESS"
+            }
+            OperationHistoryManager.addRecord(this, utterance, activeDescription, historyStatus)
+            CommandBridge.notifyHistoryChanged()
 
             when {
                 failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
@@ -260,6 +340,8 @@ class MyAccessibilityService : AccessibilityService() {
         } finally {
             Timing.log("Command chain of ${commands.size}: ${Timing.now() - chainStart} ms")
             runningChains--
+            activeUtterance = ""
+            activeDescription = ""
             refreshFloatingButton()
             CommandBridge.postStatus(CommandBridge.Status.FINISHED)
         }
@@ -281,7 +363,7 @@ class MyAccessibilityService : AccessibilityService() {
      */
     fun startFollowUp(prompt: String?) {
         followUpJob?.cancel()
-        followUpJob = serviceScope.launch {
+        followUpJob = serviceScope.launch(Dispatchers.Main) {
             Speaker.awaitSilence()
             // A newer request may have started, or the chat opened, while ZeroUI was talking.
             if (runningChains > 0 || understanding) return@launch
@@ -295,10 +377,12 @@ class MyAccessibilityService : AccessibilityService() {
         followUpJob?.cancel()
         followUpJob = null
         if (pillListening) {
-            pillSpeech.cancel()
-            pillListening = false
-            refreshFloatingButton()
-            if (statusIndicator?.currentPhase == Phase.LISTENING) statusIndicator?.hide()
+            serviceScope.launch(Dispatchers.Main.immediate) {
+                if (pillSpeechHolder.isInitialized()) pillSpeech.cancel()
+                pillListening = false
+                refreshFloatingButton()
+                if (statusIndicator?.currentPhase == Phase.LISTENING) statusIndicator?.hide()
+            }
         }
     }
 
@@ -354,7 +438,7 @@ class MyAccessibilityService : AccessibilityService() {
                 if (message == null) "Or tap here to type" else null
             )
         }
-        serviceScope.launch {
+        serviceScope.launch(Dispatchers.Main) {
             speech.partialText.collect { heard ->
                 if (pillListening && heard.isNotBlank()) statusIndicator?.updateDetail("“$heard”")
             }
@@ -368,11 +452,15 @@ class MyAccessibilityService : AccessibilityService() {
             ViewModelProvider.AndroidViewModelFactory.getInstance(application)
         )[VoiceViewModel::class.java]
 
-    private suspend fun processSingleCommand(intent: AppIntent, progress: String? = null) {
+    private suspend fun processSingleCommand(
+        intent: AppIntent,
+        progress: String? = null,
+        stepProgress: Pair<Int, Int>? = null
+    ) {
         Log.d("NLPControl", "Processing: $intent")
         outcome = Outcome.OK
         lastReply = null
-        statusIndicator?.show(Phase.WORKING, describe(intent), progress)
+        statusIndicator?.show(Phase.WORKING, describe(intent), progress, stepProgress = stepProgress)
         try {
             Timing.measure("Command ${intent::class.simpleName}") { dispatch(intent) }
         } catch (e: CancellationException) {
@@ -404,6 +492,7 @@ class MyAccessibilityService : AccessibilityService() {
         AppIntent.Greeting -> "Saying hello"
         AppIntent.SaveHistory -> "Saving history"
         AppIntent.ClearHistory -> "Clearing history"
+        AppIntent.ViewOperationHistory -> "Viewing operation history"
         AppIntent.RepeatLast -> "Repeating your last command"
         AppIntent.TakeScreenshot -> "Taking a screenshot"
         is AppIntent.CameraAction -> "Opening the camera"
@@ -415,6 +504,10 @@ class MyAccessibilityService : AccessibilityService() {
         is AppIntent.SystemControl -> intent.action.label
         is AppIntent.OpenSettings -> "Opening ${intent.page.label}"
         is AppIntent.OpenSystemApp -> "Opening ${intent.app.labels.first()}"
+        is AppIntent.Weather -> "Checking the weather"
+        is AppIntent.SetAlarm -> "Setting an alarm"
+        is AppIntent.SetTimer -> "Starting a timer"
+        AppIntent.CurrentTime -> "Checking the time"
         is AppIntent.Navigate -> "Starting navigation"
         is AppIntent.OpenApp -> "Opening ${intent.name}".trim()
         is AppIntent.AppOrder -> "Ordering ${intent.item} on ${intent.app}"
@@ -737,6 +830,10 @@ class MyAccessibilityService : AccessibilityService() {
                 sendReply("I've cleared the conversation history.")
             }
 
+            AppIntent.ViewOperationHistory -> {
+                sendReply(OperationHistoryManager.formatHistorySummary(this))
+            }
+
             // CommandConversation expands a repeat before anything reaches the service.
             AppIntent.RepeatLast -> {
                 fail("I don't have a previous command to repeat yet.")
@@ -744,10 +841,15 @@ class MyAccessibilityService : AccessibilityService() {
 
             AppIntent.TakeScreenshot -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    statusIndicator?.hideNow() // keep the indicator out of the screenshot
-                    delay(300)
-                    performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
-                    delay(1000)
+                    statusIndicator?.hideNow() // keep overlays out of the screenshot
+                    floatingButton?.setTemporarilyHidden(true)
+                    try {
+                        delay(300)
+                        performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+                        delay(900)
+                    } finally {
+                        floatingButton?.setTemporarilyHidden(false)
+                    }
                     sendReply("Taking a screenshot for you.")
                 } else {
                     fail("Screenshot requires Android 11 or higher.")
@@ -804,14 +906,66 @@ class MyAccessibilityService : AccessibilityService() {
             // Navigation
             is AppIntent.Navigate -> {
                 if (!intent.destination.isNullOrEmpty()) {
-                    startNavigation(
-                        intent.destination,
-                        if (intent.mode == "bus") "r" else "d"
-                    )
+                    val modeFlag = when (intent.mode) {
+                        "bus" -> "r"
+                        "walking" -> "w"
+                        else -> "d"
+                    }
+                    startNavigation(intent.destination, modeFlag)
                     sendReply("Opening navigation to ${intent.destination}.")
                 } else {
                     ask("Where would you like to navigate to?")
                 }
+            }
+
+            // Everyday assistant intents (normally handled locally by VoiceViewModel, also supported here for chains)
+            is AppIntent.Weather -> {
+                val reply = com.example.myapplication.assistant.WeatherService.queryWeather(
+                    intent.location,
+                    intent.dayOffset,
+                    preferChinese = activeUtterance.any { it.code > 0x2E80 }
+                )
+                sendReply(reply)
+            }
+            is AppIntent.SetAlarm -> {
+                val h = intent.hour
+                val m = intent.minute ?: 0
+                if (h == null) {
+                    ask("What time should I set the alarm for?")
+                } else {
+                    val alarmIntent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+                        putExtra(AlarmClock.EXTRA_HOUR, h)
+                        putExtra(AlarmClock.EXTRA_MINUTES, m)
+                        putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                        intent.label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+                    }
+                    if (safeStartActivity(alarmIntent)) {
+                        sendReply(String.format(java.util.Locale.ROOT, "Alarm set for %02d:%02d.", h, m))
+                    } else {
+                        fail("I couldn't open the Clock app to set an alarm.")
+                    }
+                }
+            }
+            is AppIntent.SetTimer -> {
+                val sec = intent.durationSeconds
+                if (sec == null || sec <= 0) {
+                    ask("How long should I set the timer for?")
+                } else {
+                    val timerIntent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+                        putExtra(AlarmClock.EXTRA_LENGTH, sec)
+                        putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                        intent.label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+                    }
+                    if (safeStartActivity(timerIntent)) {
+                        sendReply("Timer started.")
+                    } else {
+                        fail("I couldn't open the Clock app to start a timer.")
+                    }
+                }
+            }
+            AppIntent.CurrentTime -> {
+                val fmt = java.text.SimpleDateFormat("yyyy/MM/dd (E) HH:mm", java.util.Locale.getDefault())
+                sendReply("It's ${fmt.format(java.util.Date())}.")
             }
 
             // App Launching
@@ -919,7 +1073,7 @@ class MyAccessibilityService : AccessibilityService() {
                     node == null -> fail("I couldn't find “${intent.text}” on screen.")
                     // The user named the button, so other taps are fine, but ZeroUI never pays.
                     ActionGuard.forTap(automationEngine.finder.tapLabels(node)) == ActionGuard.Verdict.BLOCK ->
-                        sendReply("That looks like a payment step, so I left it for you to tap yourself.")
+                        sendReply("That looks like a payment step, so I left it for you to tap yourself.", kind = MessageKind.HANDOVER)
                     automationEngine.click(node) -> sendReply("Clicked on ${intent.text}.")
                     else -> fail("I couldn't tap “${intent.text}”.")
                 }
@@ -976,7 +1130,7 @@ class MyAccessibilityService : AccessibilityService() {
         Timing.measure("Screen agent run") {
             ScreenAgent(
                 AccessibilityScreenDevice(automationEngine),
-                OpenAiLlmClient(assets),
+                llmClient,
                 AgentUser { question, choices -> askByVoice(question, choices) },
                 onProgress = { automationEngine.report(it) }
             ).run(goal)
@@ -1008,7 +1162,10 @@ class MyAccessibilityService : AccessibilityService() {
         when (outcome) {
             is ScreenAgent.Outcome.Done -> sendReply(outcome.summary ?: "Done.")
             is ScreenAgent.Outcome.HandedOver ->
-                sendReply("I stopped at “${outcome.what}”. I don't pay or enter private details, so nothing has been submitted; please finish this step yourself.")
+                sendReply(
+                    "I stopped at “${outcome.what}”. I don't pay or enter private details, so nothing has been submitted; please finish this step yourself.",
+                    kind = MessageKind.HANDOVER
+                )
             ScreenAgent.Outcome.Declined -> sendReply("Okay, I stopped there.")
             ScreenAgent.Outcome.NoAnswer -> ask("I didn't get an answer, so I stopped there.")
             is ScreenAgent.Outcome.GaveUp -> fail("I couldn't finish that${outcome.reason?.let { ": $it" } ?: "."}")
@@ -1168,20 +1325,20 @@ class MyAccessibilityService : AccessibilityService() {
     private fun note(text: String) {
         Log.d("NLPControl", "Progress: $text")
         statusIndicator?.updateDetail(text)
-        CommandBridge.postReply(text)
+        CommandBridge.postReply(text, kind = MessageKind.PROGRESS)
     }
 
-    private fun sendReply(text: String) {
+    private fun sendReply(text: String, kind: MessageKind = MessageKind.NORMAL) {
         Log.d("NLPControl", "Sending reply: $text")
         lastReply = text
         // Spoken here rather than by the UI so errors and questions are heard while another app is in front.
         Speaker.speak(text, interrupt = false)
-        CommandBridge.postReply(text)
+        CommandBridge.postReply(text, kind = kind)
     }
 
     /** Replies and marks the current command as failed (shown as an error on the indicator). */
     private fun fail(text: String) {
-        sendReply(text)
+        sendReply(text, kind = MessageKind.ERROR)
         outcome = Outcome.FAILED
     }
 
@@ -1191,17 +1348,17 @@ class MyAccessibilityService : AccessibilityService() {
         if (outcome != Outcome.FAILED) outcome = Outcome.NEEDS_INPUT
     }
 
-    private fun openAppByName(name: String): Boolean = launchAppByName(name) != null
+    private fun openAppByName(name: String): Boolean = launchAppByName(name, clearTask = false) != null
 
     /** Launches the app best matching [name] and returns its package, or null if none could be started. */
-    private fun launchAppByName(name: String): String? {
-        return launchPackage(findAppByName(name) ?: return null)
+    private fun launchAppByName(name: String, clearTask: Boolean = true): String? {
+        return launchPackage(findAppByName(name) ?: return null, clearTask = clearTask)
     }
 
-    private fun launchPackage(pkg: String): String? {
+    private fun launchPackage(pkg: String, clearTask: Boolean = true): String? {
         val launchIntent = packageManager.getLaunchIntentForPackage(pkg) ?: return null
-        // CLEAR_TASK drops whatever screen the app was left on so it starts from its home page
-        launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        // CLEAR_TASK drops whatever screen the app was left on for scripted flows; plain OpenApp preserves state.
+        if (clearTask) launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
         return if (safeStartActivity(launchIntent)) pkg else null
     }
 
@@ -1217,12 +1374,15 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     private fun launcherApps(): List<InstalledApp> {
+        cachedLauncherApps?.let { return it }
         val pm = packageManager
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        return pm.queryIntentActivities(launcher, 0)
+        val apps = pm.queryIntentActivities(launcher, 0)
             .map { InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName) }
             .filter { it.packageName != packageName }
             .distinctBy { it.packageName to it.label }
+        cachedLauncherApps = apps
+        return apps
     }
 
     private fun safeStartActivity(intent: Intent): Boolean {
@@ -1329,6 +1489,10 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (packageReceiverRegistered) {
+            try { unregisterReceiver(packageReceiver) } catch (_: Exception) {}
+            packageReceiverRegistered = false
+        }
         serviceScope.cancel()
         CommandBridge.detachService(this)
         if (pillSpeechHolder.isInitialized()) pillSpeech.destroy()

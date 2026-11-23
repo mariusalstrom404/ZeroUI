@@ -3,6 +3,7 @@ package com.example.myapplication.overlay
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -25,33 +26,28 @@ import com.example.myapplication.R
 import kotlin.math.abs
 
 /**
- * Floating status pill that tells the user what ZeroUI is doing right now ("Understanding…",
- * "Looking for “Cart”", "Done", errors) and lets them answer straight away.
+ * Floating dark-glass status pill that tells the user what ZeroUI is doing right now and lets
+ * them stop, answer by voice, drag the pill anywhere, or tap to open the full chat dialog.
  *
- * - While a command runs it shows a stop button ([onStop]).
- * - Otherwise it shows a mic button ([onMic]) to reply or give feedback by voice, and a close
- *   button ([onDismiss]). In the [Phase.LISTENING] phase the mic button is red and stops listening.
- * - Tapping the text opens the chat ([onOpenChat]), for typing instead.
- * - It can be dragged anywhere; the place is remembered. Until then it sits at the bottom, above
- *   the navigation bar.
- *
- * ZeroUI's own taps and swipes pass through it, because the engine calls [setPassThrough] around
- * each gesture. The text is a polite live region, so TalkBack users hear status changes too.
- * All methods may be called from any thread; callbacks run on the main thread.
+ * Combines:
+ * - Multi-step badge & slim progress bar for chained commands (`stepProgress`).
+ * - Accessible 42dp stop button while running, or inline mic & close buttons when idle/listening.
+ * - Draggable positioning remembered in preferences.
+ * - Gesture pass-through via [setPassThrough] so ZeroUI's own taps reach the app underneath.
  */
 class StatusIndicator(private val context: Context, private val windowManager: WindowManager) {
 
     enum class Phase(val color: Int, val symbol: String?) {
-        UNDERSTANDING(0xFFC58AF9.toInt(), null),
-        WORKING(0xFF8AB4F8.toInt(), null),
-        SUCCESS(0xFF81C995.toInt(), "✓"),
-        NEEDS_INPUT(0xFFFDD663.toInt(), "?"),
-        ERROR(0xFFF28B82.toInt(), "!"),
-        STOPPED(0xFFBDC1C6.toInt(), "■"),
+        UNDERSTANDING(0xFFA78BFA.toInt(), null),
+        WORKING(0xFF60A5FA.toInt(), null),
+        SUCCESS(0xFF34D399.toInt(), "✓"),
+        NEEDS_INPUT(0xFFFBBF24.toInt(), "?"),
+        ERROR(0xFFF87171.toInt(), "!"),
+        STOPPED(0xFF94A3B8.toInt(), "■"),
         /** ZeroUI's mic is open for the user's next request. */
         LISTENING(0xFFFF6E6E.toInt(), "●"),
         /** Nothing running; the mic button is there if the user wants to say more. */
-        READY(0xFF8AB4F8.toInt(), "…");
+        READY(0xFF60A5FA.toInt(), "…");
 
         /** Phases where a command is still running and can be stopped. */
         val stoppable: Boolean get() = symbol == null
@@ -63,13 +59,14 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     var onOpenChat: (() -> Unit)? = null
 
     companion object {
-        private const val SUCCESS_HIDE_MS = 3000L
+        private const val SUCCESS_HIDE_MS = 3500L
+        private const val LONG_SUCCESS_HIDE_MS = 5000L
         private const val NEEDS_INPUT_HIDE_MS = 8000L
-        private const val ERROR_HIDE_MS = 6000L
+        private const val ERROR_HIDE_MS = 6500L
         private const val STOPPED_HIDE_MS = 2500L
         private const val READY_HIDE_MS = 10000L
         private const val FADE_MS = 200L
-        private const val EDGE_MARGIN_DP = 12
+        private const val EDGE_MARGIN_DP = 14
         private const val PREFS = "status_pill"
     }
 
@@ -83,10 +80,13 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     private lateinit var spinner: ProgressBar
     private lateinit var badge: TextView
     private lateinit var titleView: TextView
+    private lateinit var stepChip: TextView
     private lateinit var detailView: TextView
-    private lateinit var stopButton: TextView
+    private lateinit var stopButton: FrameLayout
     private lateinit var micButton: ImageView
     private lateinit var closeButton: TextView
+    private lateinit var stepProgressBar: ProgressBar
+
     private var attached = false
     private var phase: Phase? = null
     /** ZeroUI is dispatching a gesture that must not land on the pill. */
@@ -105,28 +105,43 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
     }
 
-    /**
-     * Shows [phase] with a [title] and optional [detail]. Final phases hide themselves after a few
-     * seconds. With [atTop] the pill sits at the top of the screen instead, unless the user has
-     * moved it: e.g. while ZeroUI's dialog is open for an answer, at the bottom it would cover the
-     * dialog's text field and mic button.
-     */
-    fun show(phase: Phase, title: String, detail: String? = null, atTop: Boolean = false): Unit = onMain {
+    fun show(
+        phase: Phase,
+        title: String,
+        detail: String? = null,
+        atTop: Boolean = false,
+        stepProgress: Pair<Int, Int>? = null
+    ): Unit = onMain {
         val view = ensureAttached() ?: return@onMain
         this.phase = phase
         placeWindow(view, atTop)
         generation++
         handler.removeCallbacks(hideRunnable)
         view.animate().cancel()
-        view.animate().alpha(1f).setDuration(FADE_MS).start()
+        view.translationY = if (atTop) -dp(8).toFloat() else dp(8).toFloat()
+        view.animate().alpha(1f).translationY(0f).setDuration(FADE_MS).start()
 
         spinner.visibility = if (phase.symbol == null) View.VISIBLE else View.GONE
         spinner.indeterminateTintList = ColorStateList.valueOf(phase.color)
         badge.visibility = if (phase.symbol == null) View.GONE else View.VISIBLE
         badge.text = phase.symbol
         (badge.background as GradientDrawable).setColor(phase.color)
+
         titleView.text = title
         setDetail(detail)
+
+        if (stepProgress != null && stepProgress.second > 1) {
+            val (cur, total) = stepProgress
+            stepChip.visibility = View.VISIBLE
+            stepChip.text = "$cur/$total"
+            stepProgressBar.visibility = View.VISIBLE
+            stepProgressBar.max = total * 100
+            stepProgressBar.progress = (cur * 100).coerceIn(0, total * 100)
+            stepProgressBar.progressTintList = ColorStateList.valueOf(phase.color)
+        } else {
+            stepChip.visibility = View.GONE
+            stepProgressBar.visibility = View.GONE
+        }
 
         val listening = phase == Phase.LISTENING
         stopButton.visibility = if (phase.stoppable) View.VISIBLE else View.GONE
@@ -137,7 +152,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         applyTouchability()
 
         val hideAfter = when (phase) {
-            Phase.SUCCESS -> SUCCESS_HIDE_MS
+            Phase.SUCCESS -> if ((detail?.length ?: 0) > 60) LONG_SUCCESS_HIDE_MS else SUCCESS_HIDE_MS
             Phase.NEEDS_INPUT -> NEEDS_INPUT_HIDE_MS
             Phase.ERROR -> ERROR_HIDE_MS
             Phase.STOPPED -> STOPPED_HIDE_MS
@@ -157,7 +172,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
 
     /**
      * While [enabled], the pill ignores touches so a tap or swipe ZeroUI dispatches underneath it
-     * (e.g. a bottom "Add to cart" bar) reaches the app instead of the pill.
+     * reaches the app instead of the pill.
      */
     fun setPassThrough(enabled: Boolean): Unit = onMain {
         passThrough = enabled
@@ -240,7 +255,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
 
     // --- Position ---
 
-    /** Where the user dragged the pill to, as its top-left corner, or null if never moved. */
     private fun savedPosition(): Pair<Int, Int>? =
         if (prefs.contains("x")) prefs.getInt("x", 0) to prefs.getInt("y", 0) else null
 
@@ -259,7 +273,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         relayout()
     }
 
-    /** Keeps the pill fully on screen, e.g. after rotating or when its text got longer. */
     private fun clamp(view: View, x: Int, y: Int): Pair<Int, Int> {
         val metrics = context.resources.displayMetrics
         val width = view.width.takeIf { it > 0 } ?: dp(200)
@@ -268,7 +281,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             y.coerceIn(topOffset() - dp(EDGE_MARGIN_DP), (metrics.heightPixels - height).coerceAtLeast(0))
     }
 
-    /** Drags the pill with the finger; a touch that doesn't move is a tap, which opens the chat. */
     @SuppressLint("ClickableViewAccessibility")
     private fun dragHandler() = object : View.OnTouchListener {
         private var downX = 0f
@@ -282,7 +294,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
                     downY = event.rawY
-                    // Switches to top-left coordinates, so moving is a plain offset from where it is now.
                     val location = IntArray(2).also { view.getLocationOnScreen(it) }
                     startX = location[0]
                     startY = location[1]
@@ -306,7 +317,6 @@ class StatusIndicator(private val context: Context, private val windowManager: W
                 MotionEvent.ACTION_UP -> {
                     if (dragging) {
                         prefs.edit().putInt("x", params.x).putInt("y", params.y).apply()
-                        // Moving it counts as looking at it: final phases get their full time again.
                         phase?.let { if (!it.stoppable && it != Phase.LISTENING) handler.postDelayed(hideRunnable, READY_HIDE_MS) }
                     } else {
                         view.performClick()
@@ -321,53 +331,102 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     // --- Views ---
 
     private fun buildView(): LinearLayout {
-        val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.55).toInt()
+        val maxTextWidth = (context.resources.displayMetrics.widthPixels * 0.56).toInt()
 
         spinner = ProgressBar(context).apply {
             isIndeterminate = true
-            layoutParams = FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER)
         }
         badge = TextView(context).apply {
             gravity = Gravity.CENTER
-            setTextColor(0xFF202124.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(0xFF0F172A.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             typeface = Typeface.DEFAULT_BOLD
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL }
-            layoutParams = FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         val iconBox = FrameLayout(context).apply {
             addView(spinner)
             addView(badge)
-            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(10) }
+            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) }
         }
 
         titleView = TextView(context).apply {
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.DEFAULT_BOLD
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             maxWidth = maxTextWidth
         }
+
+        stepChip = TextView(context).apply {
+            setTextColor(0xFFCBD5E1.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(7), dp(2), dp(7), dp(2))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(0x26FFFFFF)
+            }
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(8) }
+        }
+
+        val titleRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(titleView)
+            addView(stepChip)
+        }
+
         detailView = TextView(context).apply {
-            setTextColor(0xFFCFD3D8.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(0xFFCBD5E1.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             maxWidth = maxTextWidth
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(2) }
         }
+
         val texts = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            addView(titleView)
+            addView(titleRow)
             addView(detailView)
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
 
-        stopButton = roundButton("■", "Stop") { onStop?.invoke() }
+        val stopSquare = View(context).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(Color.WHITE)
+            }
+            layoutParams = FrameLayout.LayoutParams(dp(12), dp(12), Gravity.CENTER)
+        }
+        stopButton = FrameLayout(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xD9EF4444.toInt())
+            }
+            contentDescription = "Stop"
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginStart = dp(12) }
+            addView(stopSquare)
+            setOnClickListener { onStop?.invoke() }
+        }
+
         micButton = ImageView(context).apply {
             setImageResource(R.drawable.ic_mic)
-            imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            imageTintList = ColorStateList.valueOf(Color.WHITE)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(7), dp(7), dp(7), dp(7))
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x33FFFFFF) }
@@ -375,56 +434,61 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             isClickable = true
             isFocusable = true
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginStart = dp(12) }
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply { marginStart = dp(12) }
             setOnClickListener { onMic?.invoke() }
         }
-        closeButton = roundButton("✕", "Dismiss") { onDismiss?.invoke() }.apply {
-            (background as GradientDrawable).setColor(0x00000000)
+
+        closeButton = TextView(context).apply {
+            text = "✕"
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            contentDescription = "Dismiss"
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginStart = dp(4) }
+            setOnClickListener { onDismiss?.invoke() }
         }
 
-        return LinearLayout(context).apply {
+        val mainRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(8), dp(10), dp(8))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(24).toFloat()
-                setColor(0xEB202124.toInt())
-            }
-            elevation = dp(6).toFloat()
             addView(iconBox)
             addView(texts)
             addView(stopButton)
             addView(micButton)
             addView(closeButton)
-            contentDescription = null
+        }
+
+        stepProgressBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = false
+            visibility = View.GONE
+            progressBackgroundTintList = ColorStateList.valueOf(0x33FFFFFF)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(3)
+            ).apply { topMargin = dp(8) }
+        }
+
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(12), dp(10))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(24).toFloat()
+                setColor(0xF0181C24.toInt())
+                setStroke(dp(1), 0x2BFFFFFF)
+            }
+            elevation = dp(8).toFloat()
+            addView(mainRow)
+            addView(stepProgressBar)
             setOnClickListener { onOpenChat?.invoke() }
             setOnTouchListener(dragHandler())
         }
     }
 
-    private fun roundButton(symbol: String, description: String, onClick: () -> Unit) = TextView(context).apply {
-        text = symbol
-        gravity = Gravity.CENTER
-        setTextColor(0xFFFFFFFF.toInt())
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x33FFFFFF) }
-        contentDescription = description
-        isClickable = true
-        isFocusable = true
-        visibility = View.GONE
-        layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(12) }
-        setOnClickListener { onClick() }
-    }
-
-    /**
-     * Distance from the bottom edge that keeps the pill clear of the navigation bar (3-button bar
-     * or gesture handle). Read from the display's metrics rather than this window's own insets:
-     * once the pill sits above the bar its own bottom inset is 0, which would make it oscillate.
-     */
     private fun bottomOffset(): Int = navigationBarHeight() + dp(EDGE_MARGIN_DP)
 
-    /** Distance from the top edge that keeps the pill clear of the status bar and camera cutout. */
     @SuppressLint("DiscouragedApi", "InternalInsetResource")
     private fun topOffset(): Int {
         val bar = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

@@ -262,4 +262,30 @@ class LlmJsonTest {
         assertEquals(AppIntent.Battery, command.intent)
         assertTrue(command.questions.isEmpty())
     }
+
+    @Test
+    fun readsWeatherAlarmTimerAndTime() {
+        assertEquals(AppIntent.CurrentTime, intent(""""intent":"CURRENT_TIME""""))
+        assertEquals(
+            AppIntent.Weather("Taipei", 1),
+            intent(""""intent":"WEATHER","location":"Taipei","day_offset":1""")
+        )
+        assertEquals(
+            AppIntent.SetAlarm(7, 30, "Wake up"),
+            intent(""""intent":"SET_ALARM","hour":7,"minute":30,"label":"Wake up"""")
+        )
+        assertEquals(
+            AppIntent.SetTimer(600, "Pasta"),
+            intent(""""intent":"SET_TIMER","duration_seconds":600,"label":"Pasta"""")
+        )
+    }
+
+    @Test
+    fun commandInputIncludesForegroundAppOnlyWhenProvided() {
+        val day = StayDate(2026, 11, 4)
+        assertEquals(
+            "Today: 2026-11-04\nCurrent app: YouTube\nCommand: search cats",
+            LlmJson.commandInput(day, "search cats", "YouTube")
+        )
+    }
 }

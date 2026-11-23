@@ -1,0 +1,120 @@
+<resources>
+    <string name="app_name">ZeroUI</string>
+    <string name="accessibility_service_description">允許 ZeroUI 理解您的語音指令，代您在其他應用程式中點擊、捲動或輸入文字。絕不截取畫面給 AI，亦不讀取密碼欄位。</string>
+
+    <!-- Header & Status -->
+    <string name="status_ready">待命</string>
+    <string name="status_listening">聆聽中</string>
+    <string name="status_working">執行中</string>
+    <string name="status_waiting_reply">等待回覆</string>
+    <string name="cd_mute_tts">關閉語音播報</string>
+    <string name="cd_unmute_tts">開啟語音播報</string>
+    <string name="cd_history">操作紀錄與快捷指令</string>
+    <string name="cd_settings">設定與權限</string>
+    <string name="cd_minimize">縮小 ZeroUI</string>
+    <string name="cd_clear_chat">清除對話</string>
+    <string name="cd_speak">開始說話</string>
+    <string name="cd_stop_listening">停止聆聽</string>
+    <string name="cd_stop_task">停止目前任務</string>
+    <string name="cd_send">傳送訊息</string>
+    <string name="cd_copy">複製內容</string>
+    <string name="cd_rerun">再次執行</string>
+    <string name="cd_pin">釘選為快捷指令</string>
+    <string name="cd_unpin">取消釘選</string>
+    <string name="cd_dismiss">關閉</string>
+
+    <!-- Input & Banners -->
+    <string name="input_placeholder">告訴 ZeroUI 你想做什麼…</string>
+    <string name="input_placeholder_working">正在執行…點擊停止按鈕可取消</string>
+    <string name="input_placeholder_answering">說出或輸入你的回覆…</string>
+    <string name="heard_listening">正在聆聽…</string>
+    <string name="banner_awaiting_title">任務正在等待你的回覆</string>
+    <string name="banner_awaiting_subtitle">你下一句輸入將直接回答進行中的自動化任務</string>
+    <string name="action_cancel_task">取消任務</string>
+    <string name="action_retry">重試</string>
+    <string name="action_confirm">確認執行</string>
+    <string name="action_cancel">取消</string>
+    <string name="copied_feedback">已複製到剪貼簿</string>
+
+    <!-- Welcome & Capability Categories -->
+    <string name="welcome_title">有什麼我可以幫你？</string>
+    <string name="welcome_subtitle">自然說出需求，或點選下方指令立即體驗——支援跨 App 多步驟串接。</string>
+    <string name="section_pinned">已釘選快捷指令</string>
+    <string name="section_try_asking">試著這樣說</string>
+    <string name="cat_device">裝置控制</string>
+    <string name="cat_device_ex1">Check my battery</string>
+    <string name="cat_device_ex2">Turn on the flashlight</string>
+    <string name="cat_daily">日常助理</string>
+    <string name="cat_daily_ex1">今天天氣如何</string>
+    <string name="cat_daily_ex2">倒計時 5 分鐘</string>
+    <string name="cat_navigate">地圖導航</string>
+    <string name="cat_navigate_ex1">Take me to the airport</string>
+    <string name="cat_food">美食外送</string>
+    <string name="cat_food_ex1">Search for pizza on Foodpanda</string>
+    <string name="cat_travel">訂房旅遊</string>
+    <string name="cat_travel_ex1">Find a hotel in Tokyo on Booking.com</string>
+
+    <!-- Message Labels -->
+    <string name="badge_confirm_title">需要您的確認</string>
+    <string name="badge_handover_title">為保護安全已暫停</string>
+    <string name="badge_error_title">無法完成操作</string>
+
+    <!-- Setup & Onboarding -->
+    <string name="setup_title">完成 ZeroUI 初始設定</string>
+    <string name="setup_progress">已完成 %1$d / %2$d</string>
+    <string name="setup_mic_label">麥克風權限</string>
+    <string name="setup_mic_desc">用於接收您的語音指令</string>
+    <string name="setup_a11y_label">無障礙服務</string>
+    <string name="setup_a11y_desc">用於跨 App 自動點擊與輸入</string>
+    <string name="setup_write_label">修改系統設定（選用）</string>
+    <string name="setup_write_desc">用於透過語音調整螢幕亮度</string>
+    <string name="action_turn_on">前往開啟</string>
+    <string name="status_enabled">已開啟</string>
+    <string name="status_missing">尚未開啟</string>
+    <string name="err_open_settings">無法在此裝置開啟系統設定。</string>
+
+    <!-- Accessibility Guide Dialog -->
+    <string name="a11y_guide_title">如何開啟無障礙服務</string>
+    <string name="a11y_guide_step1">1. 點擊下方按鈕前往 Android 無障礙設定頁。</string>
+    <string name="a11y_guide_step2">2. 點選「已下載的應用程式」（或「已安裝的服務」）並選擇 ZeroUI。</string>
+    <string name="a11y_guide_step3">3. 開啟「使用 ZeroUI」並允許控制。</string>
+    <string name="a11y_guide_restricted">Android 13 以上若開關呈灰色：請先進入 ZeroUI「應用程式資訊」→ 點右上角「⋮」→ 選「允許受限制的設定」。</string>
+    <string name="a11y_guide_privacy">隱私承諾：ZeroUI 絕不會上傳截圖、絕不讀取密碼欄位，且遇到付款步驟一定交由您親自完成。</string>
+    <string name="a11y_guide_open_btn">前往無障礙設定</string>
+
+    <!-- History Sheet -->
+    <string name="history_title">操作紀錄與快捷指令</string>
+    <string name="history_recent">最近執行的任務</string>
+    <string name="history_empty_title">尚無操作紀錄</string>
+    <string name="history_empty_subtitle">執行過的跨 App 任務會記錄於此，方便您一鍵重跑或釘選為常用快捷指令。</string>
+    <string name="history_clear">清除紀錄</string>
+    <string name="history_status_success">完成</string>
+    <string name="history_status_failed">失敗</string>
+    <string name="history_status_cancelled">已停止</string>
+    <string name="history_status_needs_input">待確認</string>
+
+    <!-- Settings Sheet -->
+    <string name="settings_title">設定與控制中心</string>
+    <string name="settings_section_permissions">系統權限狀態</string>
+    <string name="settings_section_voice">語音與播報</string>
+    <string name="settings_mute_tts">靜音模式（關閉語音朗讀）</string>
+    <string name="settings_mute_tts_desc">在會議室或安靜場所僅以文字顯示回覆</string>
+    <string name="settings_speech_rate">語音朗讀速度</string>
+    <string name="settings_speech_lang">語音辨識語言</string>
+    <string name="lang_auto">跟隨系統</string>
+    <string name="lang_en">English (US)</string>
+    <string name="lang_zh_tw">繁體中文</string>
+    <string name="settings_section_overlay">懸浮麥克風球</string>
+    <string name="settings_show_floating">在其他 App 上顯示懸浮麥克風</string>
+    <string name="settings_show_floating_desc">隨時一鍵喚醒 ZeroUI</string>
+    <string name="settings_auto_dim">閒置自動半透明貼邊</string>
+    <string name="settings_auto_dim_desc">減少遮擋背景 App 畫面與按鈕</string>
+    <string name="settings_reset_pos">重設懸浮球位置</string>
+    <string name="settings_section_conversation">對話與隱私</string>
+    <string name="settings_llm_status">AI 語言模型服務</string>
+    <string name="settings_llm_configured">已設定 API 金鑰</string>
+    <string name="settings_llm_missing">尚未設定 API 金鑰</string>
+    <string name="settings_clear_chat">清空目前對話紀錄</string>
+    <string name="settings_privacy_note">僅在理解指令或操作無腳本 App 時，才會將語音文字與畫面元件標籤（不含截圖與密碼）傳送至 OpenAI。</string>
+    <string name="floating_hidden_toast">已隱藏懸浮麥克風，可隨時在 ZeroUI 設定中重新開啟。</string>
+</resources>
