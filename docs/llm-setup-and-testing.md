@@ -56,9 +56,9 @@ Each response lists only the fields of the intent the model chose. A field of th
 | Command | Expected result |
 |---|---|
 | `turn on the flashlight` | `FLASHLIGHT`, `enable: true` |
-| `transfer 50 to Bob` | `TRANSFER`, `amount: 50`, `recipient: "Bob"`, empty `missing` |
-| `send some money` | `TRANSFER`, with `AMOUNT` and `RECIPIENT` in `missing`, each with a question |
-| `check my balance and take a screenshot` | Two commands: `CHECK_BALANCE`, then `TAKE_SCREENSHOT` |
+| `navigate to Taipei 101 by bus` | `NAVIGATE`, `destination: "Taipei 101"`, `mode: "bus"`, empty `missing` |
+| `take me to the airport` | `NAVIGATE`, with `MODE` in `missing` and a question |
+| `check the weather and take a screenshot` | Two commands: `WEATHER`, then `TAKE_SCREENSHOT` |
 | `order fish and chips from Joe's on Foodpanda` | One `APP_ORDER`, `item: "fish and chips"` |
 | `幫我打開手電筒` | `FLASHLIGHT`, `enable: true` |
 | `search for 牛肉麵 on Foodpanda` | `TYPE_TEXT`, `text: "牛肉麵"`, `app: "Foodpanda"` |
@@ -73,13 +73,13 @@ In the app, this only runs for answers the local rules can't understand.
 
 | Detail being collected | Question | Answer | Expected result |
 |---|---|---|---|
-| `AMOUNT` | `How much should I transfer?` | `fifty dollars` | `filled`, `value: "50"` |
-| `CONFIRMATION` | `You're about to transfer 50 to Bob. Say confirm or cancel.` | `absolutely, send it` | `confirm` |
-| `CONFIRMATION` | `You're about to transfer 50 to Bob. Say confirm or cancel.` | `what's the weather` | `unclear`, not `confirm` |
+| `MODE` | `How would you like to get there?` | `I'll take my car` | `filled`, `value: "driving"` |
+| `CONFIRMATION` | `Should I tap "Send"? Say confirm or cancel.` | `absolutely, send it` | `confirm` |
+| `CONFIRMATION` | `Should I tap "Send"? Say confirm or cancel.` | `what's the weather` | `unclear`, not `confirm` |
 | `DATES` | `When are you staying?` | `the first weekend of December` | `filled`, with `check_in` and `check_out` |
 | `HOTEL` | `Which hotel would you like?` | `you pick for me` | `no_preference` |
 
-Model output can vary, so run the safety rows several times. A wrong `confirm` or a guessed `TRANSFER` is the failure to take most seriously.
+Model output can vary, so run the safety rows several times. A wrong `confirm` is the failure to take most seriously.
 
 ### Errors
 

@@ -28,7 +28,6 @@ import com.example.myapplication.automation.AutomationEngine
 import com.example.myapplication.automation.ScreenAgent
 import com.example.myapplication.automation.BookingAutomation
 import com.example.myapplication.automation.FoodDeliveryAutomation
-import com.example.myapplication.automation.FoodGorillaAutomation
 import com.example.myapplication.automation.InstalledApp
 import com.example.myapplication.automation.AppMatcher
 import com.example.myapplication.automation.Selector
@@ -44,6 +43,7 @@ import com.example.myapplication.nlp.SystemAction
 import com.example.myapplication.overlay.FloatingMicButton
 import com.example.myapplication.overlay.StatusIndicator
 import com.example.myapplication.overlay.StatusIndicator.Phase
+import com.example.myapplication.overlay.TapHighlightOverlay
 import com.example.myapplication.speech.Speaker
 import com.example.myapplication.speech.SpeechManager
 import com.example.myapplication.system.SystemController
@@ -52,7 +52,6 @@ import com.example.myapplication.ui.UserPreferences
 import com.example.myapplication.ui.VoiceViewModel
 import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.*
-import java.util.regex.Pattern
 
 class MyAccessibilityService : AccessibilityService() {
 
@@ -66,7 +65,6 @@ class MyAccessibilityService : AccessibilityService() {
 
     private val llmClient by lazy { OpenAiLlmClient(assets) }
     private val automationEngine by lazy { AutomationEngine(this) }
-    private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
     private val foodDeliveryAuto by lazy { FoodDeliveryAutomation(automationEngine) }
     private val bookingAuto by lazy { BookingAutomation(automationEngine) }
     private val systemController by lazy { SystemController(this, automationEngine) }
@@ -82,6 +80,7 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     private var statusIndicator: StatusIndicator? = null
+    private var tapHighlightOverlay: TapHighlightOverlay? = null
     private var activeUtterance: String = ""
     private var activeDescription: String = ""
 
@@ -119,26 +118,6 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     companion object {
-        // Throats API Integration
-        private const val THROATS_PKG = "com.example.threadssim"
-        private const val ACTION_THROATS_POST = "com.example.threadssim.ACTION_CREATE_POST"
-        private const val ACTION_THROATS_REPOST = "com.example.threadssim.ACTION_REPOST"
-        private const val ACTION_THROATS_COMMENT = "com.example.threadssim.ACTION_CREATE_COMMENT"
-
-        // NCCUbank Integration
-        private const val NCCUBANK_PKG = "com.example.nccubank"
-        private const val URI_DASHBOARD = "nccubank://dashboard"
-        private const val URI_TRANSFER = "nccubank://transfer"
-        private const val URI_HISTORY = "nccubank://history"
-        private const val URI_TOP_UP = "nccubank://topup"
-
-        // FoodGorilla Integration
-        private const val FOODGORILLA_PKG = "com.example.foodgorilla"
-        private const val URI_FG_RESTAURANTS = "foodgorilla://app/restaurants"
-        private const val URI_FG_CART = "foodgorilla://app/cart"
-        private const val URI_FG_CHECKOUT = "foodgorilla://app/checkout"
-        private const val URI_FG_BUY_NOW = "foodgorilla://api/buy_now"
-
         /** How long a launched app gets to come to the front before the agent starts anyway. */
         private const val APP_START_TIMEOUT_MS = 5000L
         private const val ANSWER_TIMEOUT_MS = 60000L
@@ -146,8 +125,6 @@ class MyAccessibilityService : AccessibilityService() {
         private const val RESUME_HISTORY_NOTE =
             "The user completed the manual step on screen and asked you to continue the goal from the current screen."
         private val RESUME_CHOICES = listOf("Resume", "Cancel")
-
-        private val UUID_PATTERN =Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -204,8 +181,12 @@ class MyAccessibilityService : AccessibilityService() {
                 startActivity(voiceDialogIntent(listen = false))
             }
         }
+        tapHighlightOverlay = TapHighlightOverlay(this, windowManager)
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
+        automationEngine.onHighlightTarget = { bounds, longPress ->
+            if (UserPreferences.tapHighlightEnabled.value) tapHighlightOverlay?.flash(bounds, longPress)
+        }
         // Warm launcher app cache on IO so the first OpenApp / TypeText doesn't block on PackageManager IPC.
         registerPackageWatcher()
         serviceScope.launch(Dispatchers.IO) { launcherApps() }
@@ -582,18 +563,6 @@ class MyAccessibilityService : AccessibilityService() {
 
     /** What the indicator says while [intent] runs. */
     private fun describe(intent: AppIntent): String = when (intent) {
-        AppIntent.CheckBalance -> "Checking your balance"
-        is AppIntent.Transfer -> "Transferring money"
-        AppIntent.TransactionHistory -> "Opening transaction history"
-        AppIntent.TopUp -> "Opening top up"
-        is AppIntent.FoodSearch -> "Searching FoodGorilla"
-        is AppIntent.FoodOrder -> "Ordering on FoodGorilla"
-        AppIntent.FoodCart -> "Opening your cart"
-        AppIntent.FoodCheckout -> "Going to checkout"
-        is AppIntent.FoodMenu -> "Opening the menu"
-        is AppIntent.ThroatsPost -> "Posting to Throats"
-        is AppIntent.ThroatsRepost -> "Reposting"
-        is AppIntent.ThroatsComment -> "Commenting"
         is AppIntent.Flashlight -> if (intent.enable) "Turning on the flashlight" else "Turning off the flashlight"
         AppIntent.Battery -> "Checking the battery"
         is AppIntent.Volume -> "Adjusting the volume"
@@ -634,233 +603,6 @@ class MyAccessibilityService : AccessibilityService() {
     /** Executes a parsed [AppIntent] using the accessibility/system capabilities. */
     private suspend fun dispatch(intent: AppIntent) {
         when (intent) {
-            // NCCUbank: Check Balance
-            AppIntent.CheckBalance -> {
-                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_DASHBOARD)).setPackage(NCCUBANK_PKG)
-                val launched = if (safeStartActivity(viewIntent)) NCCUBANK_PKG else launchAppByName("NCCUbank")
-                if (launched != null) {
-                    val balanceCard = automationEngine.waitForElement(
-                        Selector(contentDescription = "Wallet Balance Display", exact = true),
-                        timeoutMs = 6000,
-                        packageName = launched
-                    )
-                    val balance = if (balanceCard != null) findCurrencyTextInSubtree(balanceCard) else null
-                    if (balance != null) sendReply("Your balance is $balance.")
-                    else fail("I opened NCCUbank but couldn't find the balance on screen.")
-                } else {
-                    fail("I couldn't find the NCCUbank app on your device.")
-                }
-            }
-
-            // NCCUbank: Transfer
-            is AppIntent.Transfer -> {
-                val amount = intent.amount
-                val recipient = intent.recipient
-                if (amount != null && recipient != null) {
-                    val uri = Uri.parse("$URI_TRANSFER?amount=$amount&recipient=$recipient")
-                    val viewIntent = Intent(Intent.ACTION_VIEW, uri).setPackage(NCCUBANK_PKG)
-
-                    if (safeStartActivity(viewIntent)) {
-                        note("Initiating transfer of $amount to $recipient.")
-                        val success = automationEngine.waitForElement(
-                            Selector(text = "Success", exact = true),
-                            timeoutMs = 6000,
-                            packageName = NCCUBANK_PKG
-                        )
-                        if (success != null) sendReply("Transfer completed successfully!")
-                        else fail("I started the transfer but couldn't confirm it went through. Please check NCCUbank.")
-                    } else {
-                        // Deep link failed, try manual navigation
-                        val pkg = launchAppByName("NCCUbank")
-                        if (pkg != null) {
-                            if (performClickOnText("Transfer", "Transfer Button", packageName = pkg, timeoutMs = 6000)) {
-                                delay(1500)
-                                sendReply("I've opened the transfer screen in NCCUbank. Please confirm the details.")
-                            } else {
-                                fail("I couldn't start the transfer. Is the NCCUbank app up to date?")
-                            }
-                        } else {
-                            fail("I couldn't find the NCCUbank app.")
-                        }
-                    }
-                } else {
-                    ask("I need both an amount and a recipient to make a transfer.")
-                }
-            }
-
-            // NCCUbank: History
-            AppIntent.TransactionHistory -> {
-                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_HISTORY)).setPackage(NCCUBANK_PKG)
-                if (!safeStartActivity(viewIntent)) {
-                    val pkg = launchAppByName("NCCUbank")
-                    if (pkg != null) {
-                        if (performClickOnText("History", "History Button", "Transactions", packageName = pkg, timeoutMs = 6000)) {
-                            sendReply("Showing your transaction history.")
-                        } else {
-                            fail("I couldn't find the history button in NCCUbank.")
-                        }
-                    } else {
-                        fail("NCCUbank is not installed.")
-                    }
-                } else {
-                    sendReply("Showing your transaction history.")
-                }
-            }
-
-            // NCCUbank: Top up
-            AppIntent.TopUp -> {
-                val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(URI_TOP_UP)).setPackage(NCCUBANK_PKG)
-                if (!safeStartActivity(viewIntent)) {
-                    val pkg = launchAppByName("NCCUbank")
-                    if (pkg != null) {
-                        if (performClickOnText("Top-up", "Top Up", "Top-up Button", "Deposit", packageName = pkg, timeoutMs = 6000)) {
-                            sendReply("Opening the top up screen.")
-                        } else {
-                            fail("I couldn't find the top up button.")
-                        }
-                    } else {
-                        fail("NCCUbank is not installed.")
-                    }
-                } else {
-                    sendReply("Opening the top up screen.")
-                }
-            }
-
-            // FoodGorilla: Search
-            is AppIntent.FoodSearch -> {
-                if (intent.query.isNotEmpty()) {
-                    val uri = Uri.parse("$URI_FG_RESTAURANTS?search=${Uri.encode(intent.query)}")
-                    if (safeStartActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(FOODGORILLA_PKG))) {
-                        sendReply("Searching for ${intent.query} on FoodGorilla.")
-                    } else {
-                        fail("I couldn't open FoodGorilla. Is it installed?")
-                    }
-                } else {
-                    ask("What would you like to search for on FoodGorilla?")
-                }
-            }
-
-            // FoodGorilla: Buy/Order
-            is AppIntent.FoodOrder -> {
-                val query = intent.query ?: ""
-
-                if (query.isNotEmpty()) {
-                    // Optimized extraction for "item from restaurant"
-                    val fromIndex = query.indexOf(" from ", ignoreCase = true)
-
-                    // CommandConversation asks for the restaurant, so this is only a safety net.
-                    if (fromIndex == -1) {
-                        ask("Which restaurant should I order $query from?")
-                        return
-                    }
-                    val item = query.substring(0, fromIndex).trim()
-                    val restaurant = query.substring(fromIndex + 6).trim()
-
-                    note("Running the FoodGorilla order for $item at $restaurant.")
-                    Log.e("ZeroUIAutomation", "FOOD AUTOMATION START: $item at $restaurant")
-
-                    val success = foodGorillaAuto.runOrderWorkflow(restaurant, item)
-
-                    if (success) {
-                        sendReply("FoodGorilla automation reached checkout successfully.")
-                    } else {
-                        fail("FoodGorilla automation failed. Check logs for details.")
-                    }
-                } else if (intent.itemId != null) {
-                    val uri = Uri.parse("$URI_FG_BUY_NOW?itemId=${intent.itemId}&quantity=1")
-
-                    if (safeStartActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(FOODGORILLA_PKG))) {
-                        sendReply("Ordering item ${intent.itemId} from FoodGorilla.")
-                    } else {
-                        fail("I couldn't complete the order on FoodGorilla.")
-                    }
-                } else {
-                    ask("What would you like to order?")
-                }
-            }
-
-            // FoodGorilla: Cart / Checkout
-            AppIntent.FoodCart -> {
-                if (safeStartActivity(Intent(Intent.ACTION_VIEW, Uri.parse(URI_FG_CART)).setPackage(FOODGORILLA_PKG))) {
-                    sendReply("Opening your FoodGorilla cart.")
-                } else {
-                    fail("I couldn't open the FoodGorilla cart.")
-                }
-            }
-
-            AppIntent.FoodCheckout -> {
-                if (safeStartActivity(Intent(Intent.ACTION_VIEW, Uri.parse(URI_FG_CHECKOUT)).setPackage(FOODGORILLA_PKG))) {
-                    sendReply("Taking you to FoodGorilla checkout.")
-                } else {
-                    fail("I couldn't open the FoodGorilla checkout.")
-                }
-            }
-
-            // FoodGorilla: Restaurant Menu
-            is AppIntent.FoodMenu -> {
-                if (intent.restaurant.isNotEmpty()) {
-                    val uri = Uri.parse("foodgorilla://app/restaurant/${intent.restaurant}")
-                    if (safeStartActivity(Intent(Intent.ACTION_VIEW, uri).setPackage(FOODGORILLA_PKG))) {
-                        sendReply("Opening the menu for ${intent.restaurant} on FoodGorilla.")
-                    } else {
-                        fail("I couldn't find that restaurant menu.")
-                    }
-                } else {
-                    ask("Which restaurant's menu would you like to see?")
-                }
-            }
-
-            // Throats: Create Post
-            is AppIntent.ThroatsPost -> {
-                if (intent.content.isNotEmpty()) {
-                    sendThroatsBroadcast(
-                        ACTION_THROATS_POST,
-                        mapOf(
-                            "content" to intent.content,
-                            "author" to "VoiceAssistant"
-                        )
-                    )
-                    sendReply("I've posted that to Throats for you.")
-                } else {
-                    ask("What would you like me to post?")
-                }
-            }
-
-            // Throats: Repost
-            is AppIntent.ThroatsRepost -> {
-                val postId = intent.postId ?: findUuidOnScreen()
-                if (postId != null) {
-                    sendThroatsBroadcast(
-                        ACTION_THROATS_REPOST,
-                        mapOf(
-                            "post_id" to postId,
-                            "author" to "VoiceAssistant"
-                        )
-                    )
-                    sendReply("Okay, I've reposted that.")
-                } else {
-                    fail("I couldn't find a post ID to repost.")
-                }
-            }
-
-            // Throats: Comment
-            is AppIntent.ThroatsComment -> {
-                val postId = intent.postId ?: findUuidOnScreen()
-                if (postId != null && intent.content.isNotEmpty()) {
-                    sendThroatsBroadcast(
-                        ACTION_THROATS_COMMENT,
-                        mapOf(
-                            "parent_post_id" to postId,
-                            "content" to intent.content,
-                            "author" to "VoiceAssistant"
-                        )
-                    )
-                    sendReply("Comment posted successfully.")
-                } else {
-                    ask("I need a post and content to comment.")
-                }
-            }
-
             // Flashlight
             is AppIntent.Flashlight -> {
                 if (toggleFlashlight(intent.enable)) {
@@ -927,7 +669,7 @@ class MyAccessibilityService : AccessibilityService() {
             // Conversation Management
             AppIntent.Greeting -> {
                 sendReply(
-                    "Hi! I'm ZeroUI. You can use me to control your device, navigate, handle banking with NCCUbank, order food, or post on social media. Try saying 'check my balance', 'take a screenshot', or 'repeat'. How can I help?"
+                    "Hi! I'm ZeroUI. You can use me to check the weather, set alarms or timers, control your device, navigate, order food, find hotels, or operate other apps. Try saying 'check my battery', 'take a screenshot', or 'repeat'. How can I help?"
                 )
             }
 
@@ -1455,44 +1197,6 @@ class MyAccessibilityService : AccessibilityService() {
         else -> fail("I set up the search for $what but the results didn't load.")
     }
 
-    private fun findCurrencyTextInSubtree(node: AccessibilityNodeInfo): String? {
-        val text = node.text?.toString()
-
-        if (!text.isNullOrEmpty() && text.startsWith("$")) {
-            return text
-        }
-
-        for (i in 0 until node.childCount) {
-            val found = findCurrencyTextInSubtree(node.getChild(i) ?: continue)
-            if (found != null) return found
-        }
-
-        return null
-    }
-
-    private fun sendThroatsBroadcast(action: String, extras: Map<String, String>) {
-        val intent = Intent(action).setPackage(THROATS_PKG)
-        extras.forEach { (key, value) ->
-            intent.putExtra(key, value)
-        }
-        sendBroadcast(intent)
-    }
-
-    /** Looks for a post UUID in the foreground app's windows (never ZeroUI's own transcript). */
-    private fun findUuidOnScreen(): String? {
-        val finder = automationEngine.finder
-        for (root in finder.roots()) {
-            for (node in finder.flatten(root)) {
-                val text = node.text?.toString()
-                    ?: node.contentDescription?.toString()
-                    ?: continue
-                val matcher = UUID_PATTERN.matcher(text)
-                if (matcher.find()) return matcher.group()
-            }
-        }
-        return null
-    }
-
     /**
      * Progress worth seeing in the chat and on the indicator, but not read aloud: speech queued
      * behind it would lag behind what ZeroUI is actually doing.
@@ -1676,6 +1380,7 @@ class MyAccessibilityService : AccessibilityService() {
         CommandBridge.detachService(this)
         if (pillSpeechHolder.isInitialized()) pillSpeech.destroy()
         statusIndicator?.destroy()
+        tapHighlightOverlay?.destroy()
         floatingButton?.destroy()
     }
 }

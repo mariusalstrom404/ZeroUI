@@ -272,7 +272,6 @@ object FastPathParser {
     }
 
     private fun quickEnglishMeta(p: String): AppIntent? = when (p) {
-        "check balance", "balance", "wallet balance" -> AppIntent.CheckBalance
         "show operation history", "operation history" -> AppIntent.ViewOperationHistory
         "clear history" -> AppIntent.ClearHistory
         "save history" -> AppIntent.SaveHistory
@@ -308,7 +307,6 @@ object FastPathParser {
         matchAny(lower, "亮度調低", "暗一點", "暗點", "調低亮度", "螢幕暗一點") -> AppIntent.Brightness(AppIntent.Change.DOWN)
         matchAny(lower, "拍照", "照相") -> AppIntent.CameraAction(takePhoto = true)
         matchAny(lower, "開啟相機", "打開相機", "開相機") -> AppIntent.CameraAction(takePhoto = false)
-        matchAny(lower, "查餘額", "查詢餘額", "看餘額", "查看餘額", "餘額多少", "帳戶餘額") -> AppIntent.CheckBalance
         matchAny(lower, "查看歷史操作", "操作紀錄", "歷史紀錄", "操作歷史") -> AppIntent.ViewOperationHistory
         matchAny(lower, "清除歷史", "清除紀錄", "清空紀錄") -> AppIntent.ClearHistory
         matchAny(lower, "儲存歷史", "保存歷史") -> AppIntent.SaveHistory

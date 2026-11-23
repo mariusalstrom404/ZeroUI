@@ -3,6 +3,8 @@ package com.example.myapplication.speech
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -53,6 +55,8 @@ class SpeechManager(context: Context) {
     }
 
     private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var busyRetried = false
     private val recognizer: SpeechRecognizer? =
         if (SpeechRecognizer.isRecognitionAvailable(appContext))
             SpeechRecognizer.createSpeechRecognizer(appContext) else null
@@ -95,7 +99,9 @@ class SpeechManager(context: Context) {
     init {
         UserPreferences.init(appContext)
         recognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onReadyForSpeech(params: Bundle?) {
+                busyRetried = false
+            }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {
                 if (_isListening.value) _level.value = normalise(rmsdB)
@@ -106,11 +112,24 @@ class SpeechManager(context: Context) {
                 stopped()
             }
             override fun onError(error: Int) {
+                if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && !busyRetried) {
+                    busyRetried = true
+                    recognizer.cancel()
+                    mainHandler.removeCallbacksAndMessages(null)
+                    mainHandler.postDelayed({
+                        _isListening.value = true
+                        _partialText.value = ""
+                        listenStart = Timing.now()
+                        recognizer.startListening(buildRecognizerIntent())
+                    }, 150L)
+                    return
+                }
                 stopped()
                 _partialText.value = ""
                 this@SpeechManager.errorListener?.invoke(error)
             }
             override fun onResults(results: Bundle?) {
+                busyRetried = false
                 stopped()
                 _partialText.value = ""
                 val now = Timing.now()
@@ -135,6 +154,8 @@ class SpeechManager(context: Context) {
             errorListener?.invoke(ERROR_NOT_AVAILABLE)
             return
         }
+        mainHandler.removeCallbacksAndMessages(null)
+        busyRetried = false
         _isListening.value = true
         _partialText.value = ""
         _level.value = 0f
@@ -145,12 +166,14 @@ class SpeechManager(context: Context) {
 
     /** The user is done talking: recognise what was said so far. */
     fun stopListening() {
+        mainHandler.removeCallbacksAndMessages(null)
         recognizer?.stopListening()
         stopped()
     }
 
     /** Closes the mic and drops what was heard, without a result or an error. */
     fun cancel() {
+        mainHandler.removeCallbacksAndMessages(null)
         recognizer?.cancel()
         stopped()
         _partialText.value = ""
@@ -162,6 +185,7 @@ class SpeechManager(context: Context) {
     }
 
     fun destroy() {
+        mainHandler.removeCallbacksAndMessages(null)
         recognizer?.destroy()
     }
 }

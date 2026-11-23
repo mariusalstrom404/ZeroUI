@@ -28,11 +28,14 @@ object Speaker : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     @Volatile private var ready = false
     /** Spoken as soon as the engine is ready, if [speak] was called before that. */
-    private var pending: String? = null
+    @Volatile private var pending: String? = null
     private var currentVoiceLocale: String? = null
     private val cachedVoices = mutableMapOf<String, Voice?>()
     private val pendingWaiters = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
     private val utteranceSeq = AtomicLong(0L)
+    /** Tracks the latest enqueued utterance so [awaitSilence] wakes up via callback instead of polling. */
+    @Volatile private var latestUtteranceId: String? = null
+    @Volatile private var latestIdleSignal: CompletableDeferred<Unit> = CompletableDeferred<Unit>().apply { complete(Unit) }
 
     /** Starts the engine if it isn't running yet. Safe to call from every component. */
     fun init(context: Context) {
@@ -64,6 +67,9 @@ object Speaker : TextToSpeech.OnInitListener {
     private fun completeWaiter(utteranceId: String?) {
         if (utteranceId == null) return
         pendingWaiters.remove(utteranceId)?.complete(Unit)
+        if (utteranceId == latestUtteranceId) {
+            latestIdleSignal.complete(Unit)
+        }
     }
 
     private fun containsCjk(text: String): Boolean =
@@ -122,7 +128,14 @@ object Speaker : TextToSpeech.OnInitListener {
         val engine = tts ?: return
         applyLocaleAndRate(engine, localeFor(text))
         val mode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        engine.speak(text, mode, null, text.hashCode().toString())
+        val id = "say-${SystemClock.uptimeMillis()}-${utteranceSeq.incrementAndGet()}"
+        val signal = CompletableDeferred<Unit>()
+        latestUtteranceId = id
+        latestIdleSignal = signal
+        val result = engine.speak(text, mode, null, id)
+        if (result != TextToSpeech.SUCCESS) {
+            signal.complete(Unit)
+        }
     }
 
     /** Queues [text] and returns once it has been said (returns immediately when muted). */
@@ -134,6 +147,8 @@ object Speaker : TextToSpeech.OnInitListener {
         val id = "wait-${SystemClock.uptimeMillis()}-${utteranceSeq.incrementAndGet()}"
         val finished = CompletableDeferred<Unit>()
         pendingWaiters[id] = finished
+        latestUtteranceId = id
+        latestIdleSignal = finished
         try {
             val result = engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
             if (result != TextToSpeech.SUCCESS) {
@@ -147,15 +162,20 @@ object Speaker : TextToSpeech.OnInitListener {
     }
 
     /**
-     * Returns once nothing is being said or waiting to be said, plus a moment for the speaker's
-     * echo to die down, so a mic opened afterwards doesn't hear ZeroUI's own voice.
+     * Returns once nothing is being said or waiting to be said, plus a brief echo-decay margin
+     * so a mic opened afterwards doesn't hear ZeroUI's own voice. Event-driven via
+     * [UtteranceProgressListener] instead of fixed polling delays.
      */
     suspend fun awaitSilence() {
+        if (UserPreferences.ttsMuted.value) return
+        val signal = latestIdleSignal
+        val speakingNow = pending != null || tts?.isSpeaking == true || !signal.isCompleted
+        if (!speakingNow) return
         withTimeoutOrNull(MAX_SPEECH_WAIT_MS) {
-            delay(200) // a reply queued just now may not have started yet
-            while (pending != null || tts?.isSpeaking == true) delay(100)
+            signal.await()
+            while (pending != null || tts?.isSpeaking == true) delay(60)
         }
-        delay(300)
+        delay(120)
     }
 
     fun stop() {
@@ -163,5 +183,6 @@ object Speaker : TextToSpeech.OnInitListener {
         tts?.stop()
         pendingWaiters.values.forEach { it.complete(Unit) }
         pendingWaiters.clear()
+        latestIdleSignal.complete(Unit)
     }
 }

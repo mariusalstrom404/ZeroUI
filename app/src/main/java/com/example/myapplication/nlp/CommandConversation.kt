@@ -5,7 +5,7 @@ package com.example.myapplication.nlp
  *
  * A new command goes to the LLM. Every resulting command then collects its missing details and,
  * if it's high risk, an explicit confirmation before anything runs, so a chained or repeated
- * transfer is confirmed like any other. Follow-up answers go to [FollowUpRules] or
+ * high-risk command is confirmed like any other. Follow-up answers go to [FollowUpRules] or
  * [BookingConversation] first, and to the LLM only when those can't understand them.
  */
 class CommandConversation(
@@ -210,15 +210,8 @@ class CommandConversation(
         null
     }
 
-    private fun confirmationPrompt(intent: AppIntent): String = when (intent) {
-        is AppIntent.Transfer ->
-            "You're about to transfer ${intent.amount} to ${intent.recipient}. Say 'confirm' to proceed, or 'cancel' to stop."
-        is AppIntent.FoodOrder ->
-            "You're about to place an order on FoodGorilla${intent.query?.let { " for $it" } ?: ""}. Say 'confirm' to proceed, or 'cancel' to stop."
-        AppIntent.FoodCheckout ->
-            "You're about to check out on FoodGorilla. Say 'confirm' to proceed, or 'cancel' to stop."
-        else -> "Are you sure? Say 'confirm' to proceed, or 'cancel' to stop."
-    }
+    private fun confirmationPrompt(intent: AppIntent): String =
+        "Are you sure? Say 'confirm' to proceed, or 'cancel' to stop."
 
     private companion object {
         const val CONFIRMATION = "CONFIRMATION"

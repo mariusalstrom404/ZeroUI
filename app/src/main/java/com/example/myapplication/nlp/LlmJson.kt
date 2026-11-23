@@ -176,18 +176,6 @@ object LlmJson {
         "SET_TIMER" -> AppIntent.SetTimer(o.count("duration_seconds", 1..86400), o.text("label"))
         "NAVIGATE" -> AppIntent.Navigate(o.text("destination"), o.text("mode")?.takeIf { it in FollowUpRules.TRAVEL_MODES })
         "OPEN_APP" -> AppIntent.OpenApp(o.text("app").orEmpty())
-        "CHECK_BALANCE" -> AppIntent.CheckBalance
-        "TRANSFER" -> AppIntent.Transfer(o.count("amount", 1..Int.MAX_VALUE), o.text("recipient"))
-        "BANK_HISTORY" -> AppIntent.TransactionHistory
-        "TOP_UP" -> AppIntent.TopUp
-        "FOOD_SEARCH" -> AppIntent.FoodSearch(o.text("query").orEmpty())
-        "FOOD_ORDER" -> AppIntent.FoodOrder(o.count("item_id", 1..Int.MAX_VALUE), foodQuery(o))
-        "FOOD_CART" -> AppIntent.FoodCart
-        "FOOD_CHECKOUT" -> AppIntent.FoodCheckout
-        "FOOD_MENU" -> AppIntent.FoodMenu(o.text("restaurant").orEmpty())
-        "THROATS_POST" -> AppIntent.ThroatsPost(o.text("content").orEmpty())
-        "THROATS_REPOST" -> AppIntent.ThroatsRepost(o.text("post_id"))
-        "THROATS_COMMENT" -> AppIntent.ThroatsComment(o.text("post_id"), o.text("content").orEmpty())
         "TYPE_TEXT" -> typeText(o)
         "APP_ORDER" -> AppIntent.AppOrder(o.text("item").orEmpty(), o.text("restaurant"), o.text("app").orEmpty())
         "HOTEL" -> hotel(o, today)
@@ -247,12 +235,6 @@ object LlmJson {
             .filter { it.isNotEmpty() && it.length <= 60 }
             .distinct()
             .take(MAX_CHOICES)
-    }
-
-    /** The service reads a FoodGorilla order as "item from restaurant". */
-    private fun foodQuery(o: JSONObject): String? {
-        val item = o.text("item") ?: return null
-        return o.text("restaurant")?.let { "$item from $it" } ?: item
     }
 
     private fun typeText(o: JSONObject): AppIntent.TypeText {

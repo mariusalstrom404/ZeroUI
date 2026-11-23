@@ -13,22 +13,11 @@
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <queries>
-        <package android:name="com.example.threadssim" />
-        <package android:name="com.example.nccubank" />
-        <package android:name="com.example.foodgorilla" />
         <intent>
             <action android:name="android.intent.action.SET_ALARM" />
         </intent>
         <intent>
             <action android:name="android.intent.action.SET_TIMER" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="nccubank" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="foodgorilla" />
         </intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />

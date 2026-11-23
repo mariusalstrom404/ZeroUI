@@ -112,6 +112,8 @@
     <string name="settings_show_floating_desc">Quickly summon ZeroUI from any screen</string>
     <string name="settings_auto_dim">Auto-dim &amp; tuck at edge</string>
     <string name="settings_auto_dim_desc">Fades and peeks along the edge when idle</string>
+    <string name="settings_tap_highlight">Highlight tapped controls</string>
+    <string name="settings_tap_highlight_desc">Briefly flash a ring around buttons ZeroUI taps</string>
     <string name="settings_reset_pos">Reset button position</string>
     <string name="settings_section_conversation">Conversation &amp; Privacy</string>
     <string name="settings_llm_status">AI language service</string>

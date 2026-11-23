@@ -38,7 +38,7 @@ class CommandConversationTest {
         llm.commands = intents.map { LlmCommand(it) }
     }
 
-    private val transfer = AppIntent.Transfer(50, "Bob")
+    private val navToAirport = AppIntent.Navigate("airport", "bus")
 
     @Test
     fun simpleCommandRunsAtOnce() {
@@ -88,59 +88,33 @@ class CommandConversationTest {
     @Test
     fun proxyDownRunsNothing() {
         llm.unavailable = true
-        val turn = say("transfer 50 to Bob")
+        val turn = say("message Bob on WhatsApp")
         assertTrue(turn.run.isEmpty())
         assertTrue(turn.says.single().contains("can't reach"))
     }
 
     @Test
-    fun transferNeedsConfirmation() {
-        commands(transfer)
-        val asked = say("transfer 50 to Bob")
+    fun modeFollowUpOffersButtons() {
+        commands(AppIntent.Navigate("airport", null))
+        val asked = say("take me to the airport")
         assertTrue(asked.run.isEmpty())
-        assertTrue(asked.says.single().contains("50 to Bob"))
-        assertEquals(listOf<AppIntent>(transfer), say("yes").run)
+        assertEquals(listOf("Bus", "Walking", "Driving"), asked.choices)
+        assertEquals(listOf<AppIntent>(navToAirport), say("Bus").run)
     }
 
     @Test
-    fun confirmationOffersButtons() {
-        commands(transfer)
-        assertEquals(listOf("Confirm", "Cancel"), say("transfer 50 to Bob").choices)
-        // Tapping "Confirm" sends that word, which must count as a yes.
-        assertEquals(listOf<AppIntent>(transfer), say("Confirm").run)
+    fun chainedCommandsCollectMissingDetailsBeforeRunning() {
+        commands(AppIntent.Battery, AppIntent.Navigate("airport", null))
+        assertTrue(say("check battery and navigate to the airport").run.isEmpty())
+        assertEquals(listOf(AppIntent.Battery, navToAirport), say("bus").run)
     }
 
     @Test
-    fun cancellingAConfirmationRunsNothing() {
-        commands(transfer)
-        say("transfer 50 to Bob")
-        val reply = say("Cancel")
-        assertTrue(reply.run.isEmpty())
-        assertTrue(reply.choices.isEmpty())
-    }
-
-    @Test
-    fun chainedTransferIsConfirmedBeforeAnythingRuns() {
-        commands(AppIntent.CheckBalance, transfer)
-        assertTrue(say("check my balance and transfer 50 to Bob").run.isEmpty())
-        assertEquals(listOf(AppIntent.CheckBalance, transfer), say("confirm").run)
-    }
-
-    @Test
-    fun decliningDropsOnlyThatCommand() {
-        commands(transfer, AppIntent.CheckBalance)
-        say("transfer 50 to Bob and check my balance")
-        assertEquals(listOf<AppIntent>(AppIntent.CheckBalance), say("no").run)
-    }
-
-    @Test
-    fun repeatedTransferIsConfirmedAgain() {
-        commands(transfer)
-        say("transfer 50 to Bob")
-        say("yes")
+    fun repeatRunsPreviousCommandAgain() {
+        commands(navToAirport)
+        assertEquals(listOf<AppIntent>(navToAirport), say("bus to the airport").run)
         commands(AppIntent.RepeatLast)
-        assertTrue(say("repeat").run.isEmpty())
-        assertEquals(listOf<AppIntent>(transfer), say("yes").run)
+        assertEquals(listOf<AppIntent>(navToAirport), say("repeat").run)
     }
 
     @Test
@@ -153,65 +127,47 @@ class CommandConversationTest {
 
     @Test
     fun negativeAnswerContainingYesWordDoesNotConfirm() {
-        commands(transfer)
-        say("transfer 50 to Bob")
-        assertTrue(say("no, I'm not sure").run.isEmpty())
-        assertEquals(0, llm.answerCalls)
+        assertEquals(FollowUpRules.Confirmation.NO, FollowUpRules.confirmation("no, I'm not sure"))
+        assertEquals(FollowUpRules.Confirmation.YES, FollowUpRules.confirmation("Confirm"))
+        assertEquals(FollowUpRules.Confirmation.UNCLEAR, FollowUpRules.confirmation("what's the weather"))
     }
 
     @Test
-    fun confirmationFallsBackToLlmOnlyWhenRulesAreUnclear() {
-        commands(transfer)
-        say("transfer 50 to Bob")
-        llm.answer = LlmAnswer(LlmAnswer.Status.CONFIRM)
-        assertEquals(listOf<AppIntent>(transfer), say("absolutely, send it").run)
-        assertEquals(1, llm.answerCalls)
-    }
-
-    @Test
-    fun unclearConfirmationCancelsWhenLlmIsDown() {
-        commands(transfer)
-        say("transfer 50 to Bob")
-        llm.unavailable = true
-        val turn = say("absolutely, send it")
-        assertTrue(turn.run.isEmpty())
-        assertTrue(turn.says.single().contains("cancelled"))
-    }
-
-    @Test
-    fun missingDetailsAskTheLlmsQuestionThenConfirm() {
+    fun missingDetailsAskTheLlmsQuestionThenRun() {
         llm.commands = listOf(
-            LlmCommand(AppIntent.Transfer(null, null), mapOf(FollowUpSlot.AMOUNT to "How much would you like to send?"))
+            LlmCommand(
+                AppIntent.Navigate(null, null),
+                mapOf(FollowUpSlot.DESTINATION to "Where would you like to navigate?")
+            )
         )
-        assertEquals("How much would you like to send?", say("send some money").says.single())
-        assertEquals(FollowUpSlot.RECIPIENT.defaultQuestion(), say("50").says.single())
-        assertTrue(say("to Bob").says.single().contains("50 to Bob"))
-        assertEquals(listOf<AppIntent>(transfer), say("yes").run)
+        assertEquals("Where would you like to navigate?", say("I need directions").says.single())
+        assertEquals(FollowUpSlot.MODE.defaultQuestion(), say("airport").says.single())
+        assertEquals(listOf<AppIntent>(navToAirport), say("bus").run)
         assertEquals(0, llm.answerCalls)
         assertEquals(1, llm.parseCalls)
     }
 
     @Test
     fun llmReadsAnAnswerTheRulesCannot() {
-        commands(AppIntent.Transfer(null, "Bob"))
-        say("send money to Bob")
-        llm.answer = LlmAnswer(LlmAnswer.Status.FILLED, value = "50")
-        assertTrue(say("fifty dollars").says.single().contains("50 to Bob"))
+        commands(AppIntent.Navigate("airport", null))
+        say("take me to the airport")
+        llm.answer = LlmAnswer(LlmAnswer.Status.FILLED, value = "driving")
+        assertEquals(listOf<AppIntent>(AppIntent.Navigate("airport", "driving")), say("I'll take my sedan").run)
         assertEquals(1, llm.answerCalls)
     }
 
     @Test
     fun llmValueThatCannotFillTheSlotAsksAgain() {
-        commands(AppIntent.Transfer(null, "Bob"))
-        say("send money to Bob")
-        llm.answer = LlmAnswer(LlmAnswer.Status.FILLED, value = "a lot")
-        assertTrue(say("a lot").says.single().startsWith("Sorry"))
+        commands(AppIntent.Navigate("airport", null))
+        say("take me to the airport")
+        llm.answer = LlmAnswer(LlmAnswer.Status.FILLED, value = "teleport")
+        assertTrue(say("by teleport").says.single().startsWith("Sorry"))
     }
 
     @Test
     fun cancellingADetailDropsTheCommand() {
-        commands(AppIntent.Transfer(null, "Bob"))
-        say("send money to Bob")
+        commands(AppIntent.Navigate("airport", null))
+        say("take me to the airport")
         val turn = say("never mind")
         assertTrue(turn.run.isEmpty())
         assertTrue(turn.says.single().contains("cancelled"))

@@ -14,29 +14,32 @@ class LlmJsonTest {
         LlmJson.commands("""{"commands":[{$fields,"missing":[]}]}""", today).single().intent
 
     @Test
-    fun readsTransfer() {
-        assertEquals(AppIntent.Transfer(50, "Bob"), intent(""""intent":"TRANSFER","amount":50,"recipient":"Bob""""))
+    fun readsNavigate() {
+        assertEquals(
+            AppIntent.Navigate("Taipei 101", "bus"),
+            intent(""""intent":"NAVIGATE","destination":"Taipei 101","mode":"bus"""")
+        )
     }
 
     @Test
-    fun invalidAmountReadsAsMissing() {
-        assertNull((intent(""""intent":"TRANSFER","amount":-5,"recipient":"Bob"""") as AppIntent.Transfer).amount)
+    fun invalidAlarmHourReadsAsMissing() {
+        assertNull((intent(""""intent":"SET_ALARM","hour":99,"minute":0,"label":null""") as AppIntent.SetAlarm).hour)
     }
 
     @Test
     fun keepsSeveralCommandsInOrder() {
         val commands = LlmJson.commands(
-            """{"commands":[{"intent":"CHECK_BALANCE","missing":[]},{"intent":"TAKE_SCREENSHOT","missing":[]}]}""", today
+            """{"commands":[{"intent":"BATTERY","missing":[]},{"intent":"TAKE_SCREENSHOT","missing":[]}]}""", today
         )
-        assertEquals(listOf(AppIntent.CheckBalance, AppIntent.TakeScreenshot), commands.map { it.intent })
+        assertEquals(listOf(AppIntent.Battery, AppIntent.TakeScreenshot), commands.map { it.intent })
     }
 
     @Test
     fun readsMissingQuestions() {
         val command = LlmJson.commands(
-            """{"commands":[{"intent":"TRANSFER","amount":null,"recipient":null,"missing":[{"slot":"AMOUNT","question":"How much?"}]}]}""", today
+            """{"commands":[{"intent":"NAVIGATE","destination":null,"mode":null,"missing":[{"slot":"DESTINATION","question":"Where to?"}]}]}""", today
         ).single()
-        assertEquals("How much?", command.questions[FollowUpSlot.AMOUNT])
+        assertEquals("Where to?", command.questions[FollowUpSlot.DESTINATION])
     }
 
     @Test

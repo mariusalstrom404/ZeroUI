@@ -1,25 +1,10 @@
 package com.example.myapplication.nlp
 
 /** A detail a command can't run without, which the assistant asks the user for. */
-enum class FollowUpSlot { AMOUNT, RECIPIENT, ITEM, RESTAURANT, APP, QUERY, TEXT, CONTENT, DESTINATION, MODE, ALARM_TIME, DURATION }
+enum class FollowUpSlot { ITEM, RESTAURANT, APP, TEXT, DESTINATION, MODE, ALARM_TIME, DURATION }
 
 /** The details [this] still needs. Checked here as well as by the LLM, so a slip can't skip one. */
 fun AppIntent.missingSlots(): List<FollowUpSlot> = when (this) {
-    is AppIntent.Transfer -> listOfNotNull(
-        FollowUpSlot.AMOUNT.takeIf { amount == null },
-        FollowUpSlot.RECIPIENT.takeIf { recipient.isNullOrBlank() }
-    )
-    is AppIntent.FoodSearch -> listOfNotNull(FollowUpSlot.QUERY.takeIf { query.isBlank() })
-    is AppIntent.FoodOrder -> when {
-        itemId != null -> emptyList()
-        query.isNullOrBlank() -> listOf(FollowUpSlot.ITEM)
-        // The service reads the query as "item from restaurant".
-        !query.contains(" from ", ignoreCase = true) -> listOf(FollowUpSlot.RESTAURANT)
-        else -> emptyList()
-    }
-    is AppIntent.FoodMenu -> listOfNotNull(FollowUpSlot.RESTAURANT.takeIf { restaurant.isBlank() })
-    is AppIntent.ThroatsPost -> listOfNotNull(FollowUpSlot.CONTENT.takeIf { content.isBlank() })
-    is AppIntent.ThroatsComment -> listOfNotNull(FollowUpSlot.CONTENT.takeIf { content.isBlank() })
     is AppIntent.Navigate -> listOfNotNull(
         FollowUpSlot.DESTINATION.takeIf { destination.isNullOrBlank() },
         FollowUpSlot.MODE.takeIf { mode == null }
@@ -43,21 +28,8 @@ fun AppIntent.missingSlots(): List<FollowUpSlot> = when (this) {
     else -> emptyList()
 }
 
-/** [this] with [slot] set to [value], or null when [value] can't fill it (an amount that isn't a number). */
+/** [this] with [slot] set to [value], or null when [value] can't fill it. */
 fun AppIntent.fill(slot: FollowUpSlot, value: String): AppIntent? = when (this) {
-    is AppIntent.Transfer -> when (slot) {
-        FollowUpSlot.AMOUNT -> value.toIntOrNull()?.takeIf { it > 0 }?.let { copy(amount = it) }
-        FollowUpSlot.RECIPIENT -> copy(recipient = value)
-        else -> null
-    }
-    is AppIntent.FoodSearch -> copy(query = value)
-    is AppIntent.FoodOrder -> when (slot) {
-        FollowUpSlot.RESTAURANT -> copy(query = "$query from $value")
-        else -> copy(query = value)
-    }
-    is AppIntent.FoodMenu -> copy(restaurant = value)
-    is AppIntent.ThroatsPost -> copy(content = value)
-    is AppIntent.ThroatsComment -> copy(content = value)
     is AppIntent.Navigate -> when (slot) {
         FollowUpSlot.DESTINATION -> copy(destination = value)
         FollowUpSlot.MODE -> FollowUpRules.travelMode(value)?.let { copy(mode = it) }
@@ -85,14 +57,10 @@ fun AppIntent.fill(slot: FollowUpSlot, value: String): AppIntent? = when (this) 
 
 /** Used when the LLM didn't word a question for [slot]. */
 fun FollowUpSlot.defaultQuestion(): String = when (this) {
-    FollowUpSlot.AMOUNT -> "How much should I transfer?"
-    FollowUpSlot.RECIPIENT -> "Who should I send it to?"
     FollowUpSlot.ITEM -> "What would you like to order?"
     FollowUpSlot.RESTAURANT -> "Which restaurant?"
     FollowUpSlot.APP -> "Which app?"
-    FollowUpSlot.QUERY -> "What should I search for?"
     FollowUpSlot.TEXT -> "What should I type?"
-    FollowUpSlot.CONTENT -> "What should it say?"
     FollowUpSlot.DESTINATION -> "Where would you like to go?"
     FollowUpSlot.MODE -> "How would you like to get there? Bus, walking, or driving?"
     FollowUpSlot.ALARM_TIME -> "What time should I set the alarm for? (e.g. 7:30 AM or 早上7點半)"
@@ -133,7 +101,6 @@ object FollowUpRules {
         RegexOption.IGNORE_CASE
     )
     private val TRAILING_PLEASE = Regex("\\s+please$", RegexOption.IGNORE_CASE)
-    private val DIGITS = Regex("^\\D*?(\\d+)\\D*$")
 
     fun confirmation(answer: String): Confirmation = when {
         NO.containsMatchIn(answer) -> Confirmation.NO
@@ -156,16 +123,13 @@ object FollowUpRules {
         if (text.isEmpty()) return Reading.Unclear
         if (CANCEL.containsMatchIn(text)) return Reading.Cancel
         return when (slot) {
-            // Only exactly one number counts: "50 or 60" needs a closer read.
-            FollowUpSlot.AMOUNT -> DIGITS.find(text)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 0 }
-                ?.let { Reading.Value(it.toString()) } ?: Reading.Unclear
             FollowUpSlot.MODE -> travelMode(text)?.let { Reading.Value(it) } ?: Reading.Unclear
             FollowUpSlot.ALARM_TIME -> parseAlarmTime(text)?.let { (h, m) ->
                 Reading.Value(String.format(java.util.Locale.ROOT, "%02d:%02d", h, m))
             } ?: Reading.Unclear
             FollowUpSlot.DURATION -> parseDurationSeconds(text)?.let { Reading.Value("${it}s") } ?: Reading.Unclear
             // Free text is kept word for word.
-            FollowUpSlot.QUERY, FollowUpSlot.TEXT, FollowUpSlot.CONTENT -> Reading.Value(text)
+            FollowUpSlot.TEXT -> Reading.Value(text)
             else -> name(text)
         }
     }

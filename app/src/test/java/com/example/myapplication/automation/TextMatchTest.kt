@@ -25,8 +25,8 @@ class TextMatchTest {
 
     @Test
     fun punctuationAndSpacingAreIgnoredForEquality() {
-        assertEquals(TextMatch.EXACT, TextMatch.score("MidOnald’s", "midonald's"))
-        assertEquals(TextMatch.EXACT_LOOSE, TextMatch.score("MidOnald's", "midonalds"))
+        assertEquals(TextMatch.EXACT, TextMatch.score("McDonald’s", "mcdonald's"))
+        assertEquals(TextMatch.EXACT_LOOSE, TextMatch.score("McDonald's", "mcdonalds"))
         assertEquals(TextMatch.EXACT_LOOSE, TextMatch.score("Top-up", "top up"))
     }
 

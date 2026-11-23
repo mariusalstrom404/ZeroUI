@@ -6,7 +6,7 @@ package com.example.myapplication.automation
  * The old matcher accepted the first node whose text merely *contained* the target, so
  * "Cart" could hit "Add to Cart" and "Burger" could hit "Cheese Burger Combo" depending on
  * tree order. Scoring lets the finder pick the best candidate on screen instead, and the
- * punctuation-insensitive tiers keep "MidOnalds" (speech) matching "MidOnald’s" (UI).
+ * punctuation-insensitive tiers keep "McDonalds" (speech) matching "McDonald’s" (UI).
  *
  * Real screens rarely say exactly what the user said, so below the phrase tiers there is a
  * graded word-level tier ([WORDS_MIN]..[WORDS_MAX]): every word the user said must appear in the

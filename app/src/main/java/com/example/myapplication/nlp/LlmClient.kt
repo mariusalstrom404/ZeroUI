@@ -5,10 +5,25 @@ import com.example.myapplication.automation.ScreenLlm
 import com.example.myapplication.automation.ScreenTurn
 import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+
+/** Pure retry policy for transient OpenAI HTTP / network hiccups. */
+object LlmRetry {
+    const val MAX_RETRIES = 2
+
+    fun isRetryableStatus(status: Int): Boolean =
+        status == 408 || status == 429 || status in 500..599
+
+    fun backoffMs(attempt: Int): Long = when (attempt) {
+        0 -> 400L
+        1 -> 1200L
+        else -> 2000L
+    }
+}
 
 /** OpenAI couldn't give a usable result: offline, timed out, not configured or invalid output. */
 class LlmUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -72,7 +87,15 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         appHints: String?
     ): ScreenTurn {
         val input = LlmJson.screenInput(StayDate.today(), goal, history, screen, appHints)
-        val text = post("screen_action", "agent_prompt.txt", "agent_schema.json", input, "step ${history.size + 1}", preferredEffort = AGENT_REASONING_EFFORT)
+        val text = post(
+            name = "screen_action",
+            promptFile = "agent_prompt.txt",
+            schemaFile = "agent_schema.json",
+            input = input,
+            detail = "step ${history.size + 1}",
+            preferredEffort = AGENT_REASONING_EFFORT,
+            readTimeoutMs = AGENT_READ_TIMEOUT_MS
+        )
         return LlmJson.screenTurn(text)
     }
 
@@ -115,25 +138,57 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         schemaFile: String,
         input: String,
         detail: String? = null,
-        preferredEffort: String = FAST_REASONING_EFFORT
+        preferredEffort: String = FAST_REASONING_EFFORT,
+        readTimeoutMs: Int = READ_TIMEOUT_MS
     ): String =
         withContext(Dispatchers.IO) {
             if (!isConfigured()) throw LlmUnavailableException("LlmSecrets.kt is not filled in")
             val label = if (detail == null) name else "$name ($detail)"
             var effort: String? = resolveEffort(preferredEffort)
-            var (status, reply) = send(label, name, promptFile, schemaFile, input, effort)
+            var (status, reply) = sendWithRetry(label, name, promptFile, schemaFile, input, effort, readTimeoutMs)
             // If the model rejects "minimal" (or reasoning altogether), step down once and remember it.
             while (status == HttpURLConnection.HTTP_BAD_REQUEST && effort != null && reply.contains("reasoning")) {
                 val next = nextLowerEffort(effort)
                 rejectedEfforts.add(effort)
                 Timing.log("OpenAI $label: effort '$effort' rejected, retrying with ${next ?: "none"}")
                 effort = next
-                val retry = send(label, name, promptFile, schemaFile, input, effort)
+                val retry = sendWithRetry(label, name, promptFile, schemaFile, input, effort, readTimeoutMs)
                 status = retry.first
                 reply = retry.second
             }
             checked(label, status, reply)
         }
+
+    /** Retries transient network errors and 429/5xx responses with short exponential backoff. */
+    private suspend fun sendWithRetry(
+        label: String,
+        name: String,
+        promptFile: String,
+        schemaFile: String,
+        input: String,
+        effort: String?,
+        readTimeoutMs: Int
+    ): Pair<Int, String> {
+        var lastException: LlmUnavailableException? = null
+        for (attempt in 0..LlmRetry.MAX_RETRIES) {
+            try {
+                val (status, reply) = send(label, name, promptFile, schemaFile, input, effort, readTimeoutMs)
+                if (!LlmRetry.isRetryableStatus(status) || attempt == LlmRetry.MAX_RETRIES) {
+                    return status to reply
+                }
+                val waitMs = LlmRetry.backoffMs(attempt)
+                Timing.log("OpenAI $label returned $status, retrying in ${waitMs} ms (attempt ${attempt + 1})")
+                delay(waitMs)
+            } catch (e: LlmUnavailableException) {
+                lastException = e
+                if (attempt == LlmRetry.MAX_RETRIES) throw e
+                val waitMs = LlmRetry.backoffMs(attempt)
+                Timing.log("OpenAI $label transient failure, retrying in ${waitMs} ms (attempt ${attempt + 1})")
+                delay(waitMs)
+            }
+        }
+        throw lastException ?: LlmUnavailableException("Couldn't reach OpenAI")
+    }
 
     private fun resolveEffort(preferred: String): String? {
         var candidate: String? = preferred
@@ -163,13 +218,14 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         promptFile: String,
         schemaFile: String,
         input: String,
-        effort: String?
+        effort: String?,
+        readTimeoutMs: Int
     ): Pair<Int, String> {
         val start = Timing.now()
         try {
             val body = LlmJson.request(LlmSecrets.OPENAI_MODEL, name, asset(schemaFile), asset(promptFile), input, effort)
                 .toByteArray()
-            val connection = open("$API_URL/responses", "POST").apply {
+            val connection = open("$API_URL/responses", "POST", readTimeoutMs).apply {
                 doOutput = true
                 // Sent as it's written; otherwise the whole body waits in a buffer until the response is read.
                 setFixedLengthStreamingMode(body.size)
@@ -194,11 +250,11 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         }
     }
 
-    private fun open(url: String, method: String) =
+    private fun open(url: String, method: String, readTimeoutMs: Int = READ_TIMEOUT_MS) =
         (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
+            readTimeout = readTimeoutMs
             setRequestProperty("Authorization", "Bearer ${LlmSecrets.OPENAI_API_KEY}")
         }
 
@@ -218,6 +274,7 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
         private const val API_URL = "https://api.openai.com/v1"
         private const val CONNECT_TIMEOUT_MS = 5000
         private const val READ_TIMEOUT_MS = 10000
+        private const val AGENT_READ_TIMEOUT_MS = 15000
         private const val WARMUP_COOLDOWN_MS = 25_000L
 
         /** Short classification & follow-up parsing prefer minimal reasoning for lower latency. */

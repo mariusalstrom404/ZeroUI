@@ -173,7 +173,7 @@ class FastPathParserTest {
         "open settings and turn on developer mode for me somehow",
         "turn on wifi and message Bob",
         "open Foodpanda and search for pizza",
-        "transfer 50 to Bob",
+        "send a message to Bob on WhatsApp",
         "search for pizza on foodpanda",
         "turn it up",
         "turn on the lights in the kitchen",

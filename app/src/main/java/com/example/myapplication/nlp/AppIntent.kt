@@ -46,24 +46,6 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
     data class Navigate(val destination: String?, val mode: String? = null) : AppIntent()
     data class OpenApp(val name: String) : AppIntent()
 
-    // --- NCCUbank ---
-    data object CheckBalance : AppIntent()
-    data class Transfer(val amount: Int?, val recipient: String?) : AppIntent(requiresConfirmation = true)
-    data object TransactionHistory : AppIntent()
-    data object TopUp : AppIntent()
-
-    // --- FoodGorilla ---
-    data class FoodSearch(val query: String) : AppIntent()
-    data class FoodOrder(val itemId: Int?, val query: String?) : AppIntent(requiresConfirmation = true)
-    data object FoodCart : AppIntent()
-    data object FoodCheckout : AppIntent(requiresConfirmation = true)
-    data class FoodMenu(val restaurant: String) : AppIntent()
-
-    // --- Throats ---
-    data class ThroatsPost(val content: String) : AppIntent()
-    data class ThroatsRepost(val postId: String?) : AppIntent()
-    data class ThroatsComment(val postId: String?, val content: String) : AppIntent()
-
     // --- Any app ---
     /**
      * Types [text] into the current app's search/text field, e.g. "search for pizza on foodpanda".

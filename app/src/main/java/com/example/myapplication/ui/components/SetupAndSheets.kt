@@ -534,6 +534,7 @@ fun SettingsSheet(
     val speechLocale by UserPreferences.speechLocaleTag.collectAsState()
     val floatingVisible by UserPreferences.floatingVisible.collectAsState()
     val floatingAutoDim by UserPreferences.floatingAutoDim.collectAsState()
+    val tapHighlightEnabled by UserPreferences.tapHighlightEnabled.collectAsState()
     val appMemoryEnabled by UserPreferences.appMemoryEnabled.collectAsState()
     val learnedAppCount by AppMemory.learnedAppCount.collectAsState()
 
@@ -651,6 +652,13 @@ fun SettingsSheet(
                         UserPreferences.setFloatingAutoDim(it)
                         onOverlayPrefChanged(false)
                     }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                ToggleRow(
+                    title = stringResource(R.string.settings_tap_highlight),
+                    subtitle = stringResource(R.string.settings_tap_highlight_desc),
+                    checked = tapHighlightEnabled,
+                    onCheckedChange = { UserPreferences.setTapHighlightEnabled(it) }
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 TextButton(

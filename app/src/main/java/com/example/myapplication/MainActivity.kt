@@ -235,6 +235,7 @@ class MainActivity : ComponentActivity() {
                     onStartListening = {
                         followUpListening = false
                         speechErrorMessage = null
+                        Speaker.stop() // immediate barge-in so TTS doesn't talk over the user
                         speech.startListening()
                         viewModel.warmUp()
                     },

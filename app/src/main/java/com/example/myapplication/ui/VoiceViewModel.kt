@@ -410,9 +410,9 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         when (intent) {
             AppIntent.Greeting -> addAssistant(
                 if (preferZh) {
-                    "嗨！我是 ZeroUI 語音助理。我可以幫你查天氣、設鬧鐘與倒計時、控制手機、導航、查 NCCUbank、訂餐或訂房，也能跨 App 幫你完成操作。點選下方範例或直接說出需求吧！"
+                    "嗨！我是 ZeroUI 語音助理。我可以幫你查天氣、設鬧鐘與倒計時、控制手機、導航、訂餐或訂房，也能跨 App 幫你完成操作。點選下方範例或直接說出需求吧！"
                 } else {
-                    "Hi! I'm ZeroUI, your voice assistant. I can check the weather, set alarms & timers, control your phone, navigate, check NCCUbank, order food, find stays on Booking.com and work in most other apps. Tap an example below, or just say what you need."
+                    "Hi! I'm ZeroUI, your voice assistant. I can check the weather, set alarms & timers, control your phone, navigate, order food, find stays on Booking.com and work in most other apps. Tap an example below, or just say what you need."
                 },
                 choices = EXAMPLES,
                 speech = if (preferZh) "嗨！我是 ZeroUI，有什麼我可以幫你的？" else "Hi! I'm ZeroUI. Tap an example, or just tell me what you need."

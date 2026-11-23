@@ -17,7 +17,8 @@ import kotlinx.coroutines.delay
 class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDevice {
 
     private companion object {
-        const val MAX_NODES = 250
+        const val MAX_NODES = 180
+        const val MAX_SCAN_NODES = 650
         const val MAX_LABEL = 200
         const val PROGRESS_BAR = "android.widget.ProgressBar"
         val LOADING_LABEL = Regex("^(loading|please wait|載入中|加載中|正在載入|正在加载)", RegexOption.IGNORE_CASE)
@@ -120,13 +121,12 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
         val screenW = dm.widthPixels.coerceAtLeast(1)
         val screenH = dm.heightPixels.coerceAtLeast(1)
 
-        val nodes = mutableListOf<ScreenNode>()
-        val map = mutableMapOf<Int, AccessibilityNodeInfo>()
-        val metaMap = mutableMapOf<Int, ScreenNode>()
+        val candidates = mutableListOf<ScreenNodePruner.Candidate<AccessibilityNodeInfo>>()
         val labelled = mutableListOf<Pair<String, Rect>>()
         var loading = false
         var mainScrollArea = 0L
         var mainScrollDirs: List<String> = emptyList()
+        var scanned = 0
 
         if (root != null) {
             for (node in finder.flatten(root)) {
@@ -138,7 +138,7 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
                         loading = true
                     }
                 }
-                if (nodes.size >= MAX_NODES) continue
+                if (++scanned > MAX_SCAN_NODES) continue
                 val bounds = finder.boundsOf(node)
                 if (bounds.isEmpty) continue
 
@@ -161,9 +161,8 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
                 val clickTarget = if (node.isClickable) node else finder.clickTarget(node)
                 val role = roleOf(node)
                 val region = regionOf(bounds, screenW, screenH, iconOnly = label == null, role = role)
-                val id = nodes.size
                 val screenNode = ScreenNode(
-                    id = id,
+                    id = candidates.size,
                     label = label,
                     viewId = node.viewIdResourceName?.substringAfterLast('/')?.takeIf { label == null || node.isEditable },
                     tappable = clickTarget != null,
@@ -179,10 +178,23 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
                     hint = if (node.isEditable) hint else null,
                     scrollDirs = dirs
                 )
-                nodes += screenNode
-                map[id] = node
-                metaMap[id] = screenNode
+                candidates += ScreenNodePruner.Candidate(
+                    order = candidates.size,
+                    node = screenNode,
+                    interactive = interactive || clickTarget != null,
+                    payload = node
+                )
             }
+        }
+        val selected = ScreenNodePruner.select(candidates, MAX_NODES)
+        val nodes = ArrayList<ScreenNode>(selected.size)
+        val map = HashMap<Int, AccessibilityNodeInfo>(selected.size)
+        val metaMap = HashMap<Int, ScreenNode>(selected.size)
+        selected.forEachIndexed { index, item ->
+            val renumbered = item.node.copy(id = index)
+            nodes += renumbered
+            map[index] = item.payload
+            metaMap[index] = renumbered
         }
         live = map
         liveMeta = metaMap
@@ -309,4 +321,45 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
     }
 
     override suspend fun pause() = delay(PAUSE_MS)
+}
+
+/**
+ * Interactive-first screen node selection that keeps all interactive controls (buttons, inputs,
+ * switches, scrollables, bottom-bar tabs) before filling remaining capacity with unique static
+ * text labels, while preserving original visual reading order.
+ */
+object ScreenNodePruner {
+    data class Candidate<T>(
+        val order: Int,
+        val node: ScreenNode,
+        val interactive: Boolean,
+        val payload: T
+    )
+
+    fun <T> select(candidates: List<Candidate<T>>, maxNodes: Int): List<Candidate<T>> {
+        if (candidates.isEmpty() || maxNodes <= 0) return emptyList()
+
+        val interactive = mutableListOf<Candidate<T>>()
+        val staticText = mutableListOf<Candidate<T>>()
+        val seenStaticLabels = HashSet<String>()
+
+        for (c in candidates) {
+            if (c.interactive) {
+                interactive += c
+            } else {
+                val norm = c.node.label?.trim()?.lowercase()
+                if (norm != null && seenStaticLabels.add(norm)) {
+                    staticText += c
+                }
+            }
+        }
+
+        val chosen = if (interactive.size >= maxNodes) {
+            interactive.take(maxNodes)
+        } else {
+            val remaining = maxNodes - interactive.size
+            (interactive + staticText.take(remaining)).sortedBy { it.order }
+        }
+        return chosen
+    }
 }

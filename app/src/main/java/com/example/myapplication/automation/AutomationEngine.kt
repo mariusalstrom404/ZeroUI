@@ -92,6 +92,9 @@ class AutomationEngine(private val service: AccessibilityService) {
      */
     var onGesturePassThrough: ((Boolean) -> Unit)? = null
 
+    /** Called with target screen bounds and whether it's a long-press to show a brief visual highlight. */
+    var onHighlightTarget: ((Rect, Boolean) -> Unit)? = null
+
     /** "Step 4 of 12" while [execute] runs, so progress messages say where in the workflow we are. */
     private var stepLabel: String? = null
 
@@ -354,6 +357,7 @@ class AutomationEngine(private val service: AccessibilityService) {
     /** Long-presses [node] via ACTION_LONG_CLICK, falling back to a 600ms press gesture. */
     suspend fun longClick(node: AccessibilityNodeInfo): Boolean {
         val target = if (node.isLongClickable) node else finder.clickTarget(node)?.takeIf { it.isLongClickable }
+        onHighlightTarget?.invoke(finder.boundsOf(target ?: node), true)
         if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
             return true
         }
@@ -452,6 +456,7 @@ class AutomationEngine(private val service: AccessibilityService) {
     }
 
     private suspend fun performClick(node: AccessibilityNodeInfo, target: AccessibilityNodeInfo?): Boolean {
+        onHighlightTarget?.invoke(finder.boundsOf(target ?: node), false)
         if (target != null) {
             Log.e(LOG, "[CLICK] target class=${target.className} bounds=${finder.boundsOf(target).toShortString()}")
             if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {

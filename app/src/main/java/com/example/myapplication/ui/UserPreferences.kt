@@ -24,6 +24,7 @@ object UserPreferences {
     private const val KEY_FLOATING_SAVED = "floating_pos_saved"
     private const val KEY_PINNED_COMMANDS = "pinned_commands"
     private const val KEY_APP_MEMORY_ENABLED = "app_memory_enabled"
+    private const val KEY_TAP_HIGHLIGHT_ENABLED = "tap_highlight_enabled"
 
     const val LOCALE_AUTO = "auto"
     const val LOCALE_EN_US = "en-US"
@@ -52,6 +53,9 @@ object UserPreferences {
     private val _appMemoryEnabled = MutableStateFlow(true)
     val appMemoryEnabled: StateFlow<Boolean> = _appMemoryEnabled
 
+    private val _tapHighlightEnabled = MutableStateFlow(true)
+    val tapHighlightEnabled: StateFlow<Boolean> = _tapHighlightEnabled
+
     fun init(context: Context) {
         if (prefs != null) return
         val p = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -63,11 +67,17 @@ object UserPreferences {
         _floatingAutoDim.value = p.getBoolean(KEY_FLOATING_AUTO_DIM, true)
         _pinnedCommands.value = loadPinned(p)
         _appMemoryEnabled.value = p.getBoolean(KEY_APP_MEMORY_ENABLED, true)
+        _tapHighlightEnabled.value = p.getBoolean(KEY_TAP_HIGHLIGHT_ENABLED, true)
     }
 
     fun setAppMemoryEnabled(enabled: Boolean) {
         _appMemoryEnabled.value = enabled
         prefs?.edit()?.putBoolean(KEY_APP_MEMORY_ENABLED, enabled)?.apply()
+    }
+
+    fun setTapHighlightEnabled(enabled: Boolean) {
+        _tapHighlightEnabled.value = enabled
+        prefs?.edit()?.putBoolean(KEY_TAP_HIGHLIGHT_ENABLED, enabled)?.apply()
     }
 
     fun setTtsMuted(muted: Boolean) {

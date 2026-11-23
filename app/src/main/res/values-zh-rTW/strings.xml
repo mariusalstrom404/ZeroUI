@@ -112,6 +112,8 @@
     <string name="settings_show_floating_desc">隨時一鍵喚醒 ZeroUI</string>
     <string name="settings_auto_dim">閒置自動半透明貼邊</string>
     <string name="settings_auto_dim_desc">減少遮擋背景 App 畫面與按鈕</string>
+    <string name="settings_tap_highlight">顯示點擊目標光圈</string>
+    <string name="settings_tap_highlight_desc">操作按鈕時短暫高亮外框，清楚掌握 AI 點擊位置</string>
     <string name="settings_reset_pos">重設懸浮球位置</string>
     <string name="settings_section_conversation">對話與隱私</string>
     <string name="settings_llm_status">AI 語言模型服務</string>

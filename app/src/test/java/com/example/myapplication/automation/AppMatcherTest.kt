@@ -16,8 +16,7 @@ class AppMatcherTest {
         InstalledApp("Chrome Beta", "com.chrome.beta"),
         InstalledApp("地圖", "com.google.android.apps.maps"),
         InstalledApp("Booking.com", "com.booking"),
-        InstalledApp("foodpanda", "com.global.foodpanda.android"),
-        InstalledApp("NCCU Bank", "com.example.nccubank")
+        InstalledApp("foodpanda", "com.global.foodpanda.android")
     )
 
     private fun pkg(name: String) = AppMatcher.best(name, apps)?.packageName
@@ -51,12 +50,6 @@ class AppMatcherTest {
         assertEquals("com.booking", pkg("booking.com"))
         assertEquals("com.booking", pkg("Booking"))
         assertEquals("com.global.foodpanda.android", pkg("Foodpanda"))
-    }
-
-    @Test
-    fun ownBankApp() {
-        assertEquals("com.example.nccubank", pkg("NCCUbank"))
-        assertEquals("com.example.nccubank", pkg("nccu"))
     }
 
     @Test
