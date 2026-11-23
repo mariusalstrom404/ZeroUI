@@ -299,7 +299,7 @@ object FastPathParser {
         matchAny(lower, "截圖", "螢幕截圖", "屏幕截圖", "抓圖", "截個圖") -> AppIntent.TakeScreenshot
         matchAny(lower, "打開手電筒", "開手電筒", "開啟手電筒", "開燈", "打開燈") -> AppIntent.Flashlight(true)
         matchAny(lower, "關閉手電筒", "關手電筒", "關掉手電筒", "關燈", "關掉燈") -> AppIntent.Flashlight(false)
-        matchAny(lower, "檢查電量", "剩餘電量", "電量", "看電量", "還有多少電", "手機電量", "電量多少") -> AppIntent.Battery
+        matchAny(lower, "檢查電量", "檢查目前電量", "剩餘電量", "電量", "看電量", "還有多少電", "手機電量", "電量多少") -> AppIntent.Battery
         matchAny(lower, "現在幾點", "現在幾點了", "幾點了", "現在時間", "今天幾號", "今天星期幾", "今天禮拜幾", "今天日期") -> AppIntent.CurrentTime
         matchAny(lower, "音量調高", "音量大一點", "大聲一點", "大聲點", "調高音量", "音量加", "聲音大一點") -> AppIntent.Volume(AppIntent.Change.UP)
         matchAny(lower, "音量調低", "音量小一點", "小聲一點", "小聲點", "調低音量", "音量減", "聲音小一點") -> AppIntent.Volume(AppIntent.Change.DOWN)

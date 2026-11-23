@@ -142,10 +142,8 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     companion object {
-        /** Intent extra: start listening as soon as the dialog is shown. */
+        /** Intent extra kept for compatibility; mic only starts when the user taps it. */
         const val EXTRA_START_VOICE = "start_voice"
-        /** Times speech recognition is retried by itself when an automation's question got no usable answer. */
-        private const val MAX_ANSWER_RETRIES = 1
     }
 
     // Process-wide, so the chat and a pending follow-up survive this dialog closing and reopening.
@@ -157,20 +155,11 @@ class MainActivity : ComponentActivity() {
     }
     private lateinit var speech: SpeechManager
 
-    /** Bumped for each request to start listening, including ones arriving at an open dialog. */
-    private var voiceRequests by mutableIntStateOf(0)
-
     /** Bumped on every resume, so setup & settings re-check permissions changed in Settings. */
     private var resumes by mutableIntStateOf(0)
 
     /** Inline speech error banner message (replaces ephemeral Toasts). */
     private var speechErrorMessage by mutableStateOf<String?>(null)
-
-    /** Retries used up for the current automation question. */
-    private var answerRetries = 0
-
-    /** The mic opened by itself for a next request; silence then just closes it, without a message. */
-    private var followUpListening = false
 
     // The automation taps the app underneath, so this dialog must not stay on top of it.
     private val getOutOfTheWay: () -> Unit = { moveTaskToBack(true) }
@@ -187,7 +176,6 @@ class MainActivity : ComponentActivity() {
 
         speech = SpeechManager(this)
         speech.resultListener = {
-            answerRetries = 0
             speechErrorMessage = null
             viewModel.onUserCommand(it)
         }
@@ -195,7 +183,6 @@ class MainActivity : ComponentActivity() {
         Speaker.init(this)
         viewModel.speak = { text, interrupt -> Speaker.speak(text, interrupt) }
         viewModel.onAnswered = getOutOfTheWay
-        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_START_VOICE, false)) voiceRequests++
 
         // The floating button shows when the mic is open.
         lifecycleScope.launch { speech.isListening.collect { CommandBridge.reportListening(it) } }
@@ -220,20 +207,8 @@ class MainActivity : ComponentActivity() {
                     canStop = viewModel.isProcessing && !viewModel.awaitingAnswer,
                     ttsMuted = ttsMuted,
                     speechError = speechErrorMessage,
-                    voiceRequests = voiceRequests,
-                    listenRequests = viewModel.listenRequests,
-                    onListenForMore = {
-                        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-                            followUpListening = true
-                            speech.startListening()
-                        } else {
-                            // Left the screen meanwhile: the status pill listens instead.
-                            CommandBridge.listenForMore()
-                        }
-                    },
                     resumes = resumes,
                     onStartListening = {
-                        followUpListening = false
                         speechErrorMessage = null
                         Speaker.stop() // immediate barge-in so TTS doesn't talk over the user
                         speech.startListening()
@@ -278,31 +253,14 @@ class MainActivity : ComponentActivity() {
         viewModel.refreshOperationHistory()
     }
 
-    /** The dialog was already open (e.g. an automation asks a question): listen again without recreating it. */
+    /** Brings an existing dialog to the front without auto-starting the microphone. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_START_VOICE, false)) {
-            answerRetries = 0
-            speechErrorMessage = null
-            voiceRequests++
-        }
+        speechErrorMessage = null
     }
 
-    /**
-     * An automation waiting for an answer gets one more try by itself when nothing was heard;
-     * otherwise an inline error banner with Retry is shown inside the assistant sheet.
-     */
     private fun onSpeechError(error: Int) {
-        if (followUpListening && SpeechManager.heardNothing(error)) return
-        if (CommandBridge.isAwaitingAnswer && SpeechManager.heardNothing(error) && answerRetries < MAX_ANSWER_RETRIES) {
-            answerRetries++
-            lifecycleScope.launch {
-                Speaker.speakAndWait("Sorry, I didn't catch that. Please say it again.")
-                if (CommandBridge.isAwaitingAnswer) voiceRequests++
-            }
-            return
-        }
         speechErrorMessage = SpeechManager.messageFor(error)
     }
 
@@ -328,9 +286,6 @@ fun ZeroUIAssistantSheet(
     canStop: Boolean,
     ttsMuted: Boolean,
     speechError: String?,
-    voiceRequests: Int,
-    listenRequests: Int,
-    onListenForMore: () -> Unit,
     resumes: Int,
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
@@ -377,23 +332,6 @@ fun ZeroUIAssistantSheet(
         val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         if (lastVisible >= itemCount - 3 || itemCount <= 3) {
             listState.animateScrollToItem((itemCount - 1).coerceAtLeast(0))
-        }
-    }
-
-    LaunchedEffect(voiceRequests) {
-        if (voiceRequests > 0) {
-            showHistorySheet = false
-            showSettingsSheet = false
-            requestListen()
-        }
-    }
-
-    // Continuous follow-up listening after ZeroUI finishes speaking, unless typing or viewing sheets.
-    LaunchedEffect(listenRequests) {
-        if (listenRequests == 0) return@LaunchedEffect
-        Speaker.awaitSilence()
-        if (!isListening && !showHistorySheet && !showSettingsSheet && inputText.isBlank() && hasMicPermission(context)) {
-            onListenForMore()
         }
     }
 

@@ -24,9 +24,9 @@
     <string name="cd_dismiss">關閉</string>
 
     <!-- Input & Banners -->
-    <string name="input_placeholder">告訴 ZeroUI 你想做什麼…</string>
+    <string name="input_placeholder">輸入指令，或點擊左側麥克風說話…</string>
     <string name="input_placeholder_working">正在執行…點擊停止按鈕可取消</string>
-    <string name="input_placeholder_answering">說出或輸入你的回覆…</string>
+    <string name="input_placeholder_answering">輸入你的回覆，或點擊麥克風說話…</string>
     <string name="heard_listening">正在聆聽…</string>
     <string name="banner_awaiting_title">任務正在等待你的回覆</string>
     <string name="banner_awaiting_subtitle">你下一句輸入將直接回答進行中的自動化任務</string>
@@ -39,22 +39,27 @@
     <string name="copied_feedback">已複製到剪貼簿</string>
 
     <!-- Welcome & Capability Categories -->
-    <string name="welcome_title">有什麼我可以幫你？</string>
-    <string name="welcome_subtitle">自然說出需求，或點選下方指令立即體驗——支援跨 App 多步驟串接。</string>
+    <string name="welcome_title">嗨，我是 ZeroUI</string>
+    <string name="welcome_subtitle">直接打字輸入、點擊麥克風說話，或選擇下方快捷指令——整合日常助理、系統控制與跨 App 智慧操作。</string>
+    <string name="badge_fast_local">本機秒速回應</string>
+    <string name="badge_smart_agent">跨 App 智慧探索</string>
+    <string name="badge_safe_resume">安全暫停與接續</string>
     <string name="section_pinned">已釘選快捷指令</string>
-    <string name="section_try_asking">試著這樣說</string>
-    <string name="cat_device">裝置控制</string>
-    <string name="cat_device_ex1">Check my battery</string>
-    <string name="cat_device_ex2">Turn on the flashlight</string>
+    <string name="section_try_asking">快速體驗</string>
     <string name="cat_daily">日常助理</string>
     <string name="cat_daily_ex1">今天天氣如何</string>
-    <string name="cat_daily_ex2">倒計時 5 分鐘</string>
+    <string name="cat_daily_ex2">幫我設早上 7 點半的鬧鐘</string>
+    <string name="cat_daily_ex3">倒計時 5 分鐘</string>
+    <string name="cat_agent">跨 App 智慧操作</string>
+    <string name="cat_agent_ex1">打開設定並開啟深色模式</string>
+    <string name="cat_device">裝置控制</string>
+    <string name="cat_device_ex1">檢查目前電量</string>
     <string name="cat_navigate">地圖導航</string>
-    <string name="cat_navigate_ex1">Take me to the airport</string>
+    <string name="cat_navigate_ex1">導航到台北 101</string>
     <string name="cat_food">美食外送</string>
-    <string name="cat_food_ex1">Search for pizza on Foodpanda</string>
+    <string name="cat_food_ex1">在 Foodpanda 搜尋披薩</string>
     <string name="cat_travel">訂房旅遊</string>
-    <string name="cat_travel_ex1">Find a hotel in Tokyo on Booking.com</string>
+    <string name="cat_travel_ex1">在 Booking.com 找東京飯店</string>
 
     <!-- Message Labels -->
     <string name="badge_confirm_title">需要您的確認</string>

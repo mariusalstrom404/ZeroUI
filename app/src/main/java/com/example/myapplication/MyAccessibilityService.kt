@@ -162,7 +162,7 @@ class MyAccessibilityService : AccessibilityService() {
         floatingButton = FloatingMicButton(
             context = this,
             windowManager = windowManager,
-            onTap = { startActivity(voiceDialogIntent()) },
+            onTap = { startActivity(voiceDialogIntent(listen = false)) },
             onHideRequested = {
                 Toast.makeText(this, R.string.floating_hidden_toast, Toast.LENGTH_LONG).show()
             }
@@ -446,18 +446,15 @@ class MyAccessibilityService : AccessibilityService() {
     // --- Listening in the status pill ---
 
     /**
-     * Opens the pill's mic for the user's next request once ZeroUI has finished speaking. [prompt]
-     * is the pill's title, such as a question that was just asked. Called through
-     * [CommandBridge.listenForMore] when the chat isn't on screen.
+     * Offers the ready pill with a tap-to-speak mic button once ZeroUI finishes speaking when the
+     * chat dialog isn't on screen. Never starts recording automatically; the user taps the mic.
      */
     fun startFollowUp(prompt: String?) {
         followUpJob?.cancel()
         followUpJob = serviceScope.launch(Dispatchers.Main) {
             Speaker.awaitSilence()
-            // A newer request may have started, or the chat opened, while ZeroUI was talking.
-            if (runningChains > 0 || understanding) return@launch
-            if (CommandBridge.listenInDialog()) return@launch
-            listenInPill(prompt ?: "Anything else?", "Listening… just say it")
+            if (runningChains > 0 || understanding || CommandBridge.isDialogVisible) return@launch
+            statusIndicator?.show(Phase.READY, prompt ?: "Anything else?", "Tap the mic to speak, or tap here to type")
         }
     }
 
@@ -1091,11 +1088,9 @@ class MyAccessibilityService : AccessibilityService() {
         val answer = CommandBridge.expectAnswer()
         try {
             CommandBridge.postReply(question, choices)
-            // The dialog opens while the question is read out instead of after it; the mic only
-            // starts once it has been said, so it doesn't hear ZeroUI's own voice.
+            // Open the chat sheet for typing or tapping a choice; user taps the mic if they prefer voice.
             startActivity(voiceDialogIntent(listen = false))
             Speaker.speakAndWait(question)
-            if (!answer.isCompleted) startActivity(voiceDialogIntent())
             return withTimeoutOrNull(ANSWER_TIMEOUT_MS) { answer.await() }
                 ?.also { statusIndicator?.show(Phase.WORKING, "Continuing", it) }
         } finally {
@@ -1366,7 +1361,7 @@ class MyAccessibilityService : AccessibilityService() {
      * Brings up the voice dialog and starts listening. SINGLE_TOP hands an open dialog the intent
      * (MainActivity.onNewIntent) rather than CLEAR_TOP destroying and recreating it.
      */
-    private fun voiceDialogIntent(listen: Boolean = true) = Intent(this, MainActivity::class.java)
+    private fun voiceDialogIntent(listen: Boolean = false) = Intent(this, MainActivity::class.java)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         .putExtra(MainActivity.EXTRA_START_VOICE, listen)
 

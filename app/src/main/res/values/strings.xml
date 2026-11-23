@@ -24,9 +24,9 @@
     <string name="cd_dismiss">Dismiss</string>
 
     <!-- Input & Banners -->
-    <string name="input_placeholder">Ask ZeroUI to do anything…</string>
+    <string name="input_placeholder">Type a command, or tap the mic to speak…</string>
     <string name="input_placeholder_working">Working on it… tap stop to cancel</string>
-    <string name="input_placeholder_answering">Speak or type your answer…</string>
+    <string name="input_placeholder_answering">Type your answer, or tap the mic…</string>
     <string name="heard_listening">Listening…</string>
     <string name="banner_awaiting_title">Waiting for your answer</string>
     <string name="banner_awaiting_subtitle">Your next message will answer the active task</string>
@@ -39,16 +39,21 @@
     <string name="copied_feedback">Copied to clipboard</string>
 
     <!-- Welcome & Capability Categories -->
-    <string name="welcome_title">How can I help?</string>
-    <string name="welcome_subtitle">Speak naturally or tap a suggestion below — I can chain multiple actions across apps.</string>
+    <string name="welcome_title">Hi, I\'m ZeroUI</string>
+    <string name="welcome_subtitle">Type below, tap the mic to speak, or try a quick action — daily assistant, device controls, and smart cross-app automation.</string>
+    <string name="badge_fast_local">Instant local tools</string>
+    <string name="badge_smart_agent">Cross-app AI agent</string>
+    <string name="badge_safe_resume">Safe pause &amp; resume</string>
     <string name="section_pinned">Pinned shortcuts</string>
-    <string name="section_try_asking">Try asking</string>
-    <string name="cat_device">Device Control</string>
-    <string name="cat_device_ex1">Check my battery</string>
-    <string name="cat_device_ex2">Turn on the flashlight</string>
+    <string name="section_try_asking">Quick actions</string>
     <string name="cat_daily">Daily Assistant</string>
     <string name="cat_daily_ex1">What\'s the weather today?</string>
-    <string name="cat_daily_ex2">Set a timer for 5 minutes</string>
+    <string name="cat_daily_ex2">Set an alarm for 7:30 AM</string>
+    <string name="cat_daily_ex3">Set a timer for 5 minutes</string>
+    <string name="cat_agent">Cross-App Agent</string>
+    <string name="cat_agent_ex1">Open Settings and turn on dark mode</string>
+    <string name="cat_device">Device Control</string>
+    <string name="cat_device_ex1">Check my battery</string>
     <string name="cat_navigate">Navigation</string>
     <string name="cat_navigate_ex1">Take me to the airport</string>
     <string name="cat_food">Food Delivery</string>

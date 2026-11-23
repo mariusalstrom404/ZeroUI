@@ -16,15 +16,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.FlashlightOn
 import androidx.compose.material.icons.rounded.Hotel
 import androidx.compose.material.icons.rounded.Navigation
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Restaurant
 import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -78,20 +79,26 @@ fun WelcomeSection(
         CapabilityPrompt(
             category = stringResource(R.string.cat_daily),
             command = stringResource(R.string.cat_daily_ex2),
+            icon = Icons.Rounded.Alarm,
+            accent = WarningAmber
+        ),
+        CapabilityPrompt(
+            category = stringResource(R.string.cat_daily),
+            command = stringResource(R.string.cat_daily_ex3),
             icon = Icons.Rounded.Timer,
             accent = Violet40
+        ),
+        CapabilityPrompt(
+            category = stringResource(R.string.cat_agent),
+            command = stringResource(R.string.cat_agent_ex1),
+            icon = Icons.Rounded.TouchApp,
+            accent = Indigo40
         ),
         CapabilityPrompt(
             category = stringResource(R.string.cat_device),
             command = stringResource(R.string.cat_device_ex1),
             icon = Icons.Rounded.BatteryChargingFull,
             accent = SuccessGreen
-        ),
-        CapabilityPrompt(
-            category = stringResource(R.string.cat_device),
-            command = stringResource(R.string.cat_device_ex2),
-            icon = Icons.Rounded.FlashlightOn,
-            accent = WarningAmber
         ),
         CapabilityPrompt(
             category = stringResource(R.string.cat_navigate),
@@ -113,6 +120,12 @@ fun WelcomeSection(
         )
     )
 
+    val highlights = listOf(
+        stringResource(R.string.badge_fast_local),
+        stringResource(R.string.badge_smart_agent),
+        stringResource(R.string.badge_safe_resume)
+    )
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -120,42 +133,64 @@ fun WelcomeSection(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // Hero greeting
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.secondary
-                            )
-                        )
-                    ),
-                contentAlignment = Alignment.Center
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.AutoAwesome,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(22.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.secondary
+                                )
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                Column {
+                    Text(
+                        text = stringResource(R.string.welcome_title),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = stringResource(R.string.welcome_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            Column {
-                Text(
-                    text = stringResource(R.string.welcome_title),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = stringResource(R.string.welcome_subtitle),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                highlights.forEach { tag ->
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+                    ) {
+                        Text(
+                            text = "✦ $tag",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        )
+                    }
+                }
             }
         }
 

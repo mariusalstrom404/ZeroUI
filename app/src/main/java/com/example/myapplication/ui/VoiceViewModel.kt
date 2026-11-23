@@ -410,12 +410,12 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         when (intent) {
             AppIntent.Greeting -> addAssistant(
                 if (preferZh) {
-                    "嗨！我是 ZeroUI 語音助理。我可以幫你查天氣、設鬧鐘與倒計時、控制手機、導航、訂餐或訂房，也能跨 App 幫你完成操作。點選下方範例或直接說出需求吧！"
+                    "嗨！我是 ZeroUI。你可以直接打字或點麥克風說話——我能查天氣、設鬧鐘與倒計時、控制手機、導航、訂餐訂房，也能跨 App 智慧探索操作（遇到登入或付款會安全暫停等你接續）。點選下方範例立即試試！"
                 } else {
-                    "Hi! I'm ZeroUI, your voice assistant. I can check the weather, set alarms & timers, control your phone, navigate, order food, find stays on Booking.com and work in most other apps. Tap an example below, or just say what you need."
+                    "Hi! I'm ZeroUI. Type a command or tap the mic whenever you want to speak — I can check the weather, set alarms & timers, control your phone, navigate, order food, find stays, and explore apps for you (pausing safely at login or payment). Tap an example below to try!"
                 },
-                choices = EXAMPLES,
-                speech = if (preferZh) "嗨！我是 ZeroUI，有什麼我可以幫你的？" else "Hi! I'm ZeroUI. Tap an example, or just tell me what you need."
+                choices = if (preferZh) EXAMPLES_ZH else EXAMPLES_EN,
+                speech = if (preferZh) "嗨！我是 ZeroUI，有什麼我可以幫你的？" else "Hi! I'm ZeroUI. Tap an example, or just type or speak what you need."
             )
             AppIntent.SaveHistory -> {
                 saveHistory()
@@ -566,10 +566,19 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        val EXAMPLES = listOf(
-            "Check my battery",
-            "Turn on the flashlight",
-            "Take me to the airport",
+        val EXAMPLES_ZH = listOf(
+            "今天天氣如何",
+            "幫我設早上 7 點半的鬧鐘",
+            "倒計時 5 分鐘",
+            "打開設定並開啟深色模式",
+            "在 Foodpanda 搜尋披薩",
+            "在 Booking.com 找東京飯店"
+        )
+        val EXAMPLES_EN = listOf(
+            "What's the weather today?",
+            "Set an alarm for 7:30 AM",
+            "Set a timer for 5 minutes",
+            "Open Settings and turn on dark mode",
             "Search for pizza on Foodpanda",
             "Find a hotel in Tokyo on Booking.com"
         )
