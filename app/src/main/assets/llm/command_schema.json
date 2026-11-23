@@ -23,8 +23,10 @@
                   "GREETING",
                   "SAVE_HISTORY",
                   "CLEAR_HISTORY",
+                  "VIEW_OPERATION_HISTORY",
                   "REPEAT_LAST",
                   "TAKE_SCREENSHOT",
+                  "CURRENT_TIME",
                   "CHECK_BALANCE",
                   "BANK_HISTORY",
                   "TOP_UP",
@@ -825,6 +827,146 @@
                   "string",
                   "null"
                 ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "location",
+              "day_offset"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "WEATHER"
+                ]
+              },
+              "location": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "day_offset": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "hour",
+              "minute",
+              "label",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "SET_ALARM"
+                ]
+              },
+              "hour": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "minute": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "ALARM_TIME"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "intent",
+              "duration_seconds",
+              "label",
+              "missing"
+            ],
+            "properties": {
+              "intent": {
+                "type": "string",
+                "enum": [
+                  "SET_TIMER"
+                ]
+              },
+              "duration_seconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "slot",
+                    "question"
+                  ],
+                  "properties": {
+                    "slot": {
+                      "type": "string",
+                      "enum": [
+                        "DURATION"
+                      ]
+                    },
+                    "question": {
+                      "type": "string"
+                    }
+                  }
+                }
               }
             }
           }

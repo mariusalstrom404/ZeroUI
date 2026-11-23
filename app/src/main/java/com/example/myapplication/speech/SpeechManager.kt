@@ -7,6 +7,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import com.example.myapplication.debug.Timing
+import com.example.myapplication.ui.UserPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
@@ -77,13 +78,22 @@ class SpeechManager(context: Context) {
     /** Invoked with a [SpeechRecognizer] error code (or [ERROR_NOT_AVAILABLE]) when recognition fails. */
     var errorListener: ((Int) -> Unit)? = null
 
-    private val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+    private fun buildRecognizerIntent(): Intent {
+        val tag = UserPreferences.speechLocaleTag.value
+        val locale = if (tag == UserPreferences.LOCALE_AUTO) Locale.getDefault() else Locale.forLanguageTag(tag)
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale.toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            // Tighter endpointing silence thresholds so recognition finishes sooner after speaking stops.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
+        }
     }
 
     init {
+        UserPreferences.init(appContext)
         recognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
@@ -130,7 +140,7 @@ class SpeechManager(context: Context) {
         _level.value = 0f
         listenStart = Timing.now()
         speechEnd = 0L
-        r.startListening(recognizerIntent)
+        r.startListening(buildRecognizerIntent())
     }
 
     /** The user is done talking: recognise what was said so far. */

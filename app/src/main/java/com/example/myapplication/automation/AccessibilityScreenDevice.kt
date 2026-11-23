@@ -7,26 +7,34 @@ import kotlinx.coroutines.delay
 /**
  * [ScreenDevice] over the accessibility tree of the top-most app window (never ZeroUI's own).
  * Only text from the tree is read; password fields' contents are left out.
+ *
+ * Optimised to walk the accessibility tree once per snapshot, computing bounds, click targets,
+ * tap labels, and loading-spinner presence in a single pass, and reusing the settled snapshot
+ * directly instead of reading the tree twice.
  */
 class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDevice {
 
     private companion object {
         const val MAX_NODES = 250
         const val MAX_LABEL = 200
+        const val PROGRESS_BAR = "android.widget.ProgressBar"
+        val LOADING_LABEL = Regex("^(loading|please wait|載入中|加載中|正在載入|正在加载)", RegexOption.IGNORE_CASE)
         /** How often the wait checks for quiet; cheap, since it only compares timestamps. */
-        const val POLL_MS = 50L
+        const val POLL_MS = 45L
         /** No accessibility event for this long after the last action means the app is done. */
-        const val QUIET_MS = 350L
+        const val QUIET_MS = 250L
         /**
          * How often the tree's text is compared while events keep coming. An animated banner never
          * stops sending events, but its text doesn't change, so two equal reads also count as done.
          */
-        const val TEXT_CHECK_MS = 300L
-        const val SETTLE_TIMEOUT_MS = 4000L
+        const val TEXT_CHECK_MS = 250L
+        const val SETTLE_TIMEOUT_MS = 3500L
         /** How much longer an unchanged screen is given to start reacting to the action. */
-        const val UNCHANGED_GRACE_MS = 700L
-        const val PAUSE_MS = 2000L
+        const val UNCHANGED_GRACE_MS = 450L
+        const val PAUSE_MS = 1500L
     }
+
+    private data class SnapshotResult(val screen: Screen, val loading: Boolean)
 
     private var live: Map<Int, AccessibilityNodeInfo> = emptyMap()
 
@@ -34,24 +42,26 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
     private var lastActionAt = 0L
 
     /**
-     * Waits until the app has gone quiet, then reads it. Quiet means no accessibility event since
-     * [QUIET_MS] after the last action or event, or the same text in two reads [TEXT_CHECK_MS]
-     * apart, and no loading spinner. An untouched, idle screen is read at once.
+     * Waits until the app has gone quiet, then returns the settled [Screen] without re-walking
+     * the tree unnecessarily.
      */
     override suspend fun read(previous: Screen?): Screen {
         val start = Timing.now()
-        var settled = waitForQuiet(start)
-        var screen = snapshot()
+        var (settled, snap) = waitForQuiet(start)
+        var screen = snap?.screen ?: snapshot().screen
         var waitedLonger = false
         if (previous != null && screen.fingerprint == previous.fingerprint) {
             // A slow app may not have started reacting yet. Give it a moment to send an event.
             val mark = engine.lastScreenChangeAt
             val graceEnd = Timing.now() + UNCHANGED_GRACE_MS
-            while (Timing.now() < graceEnd && engine.lastScreenChangeAt == mark) delay(POLL_MS)
+            while (Timing.now() < graceEnd && engine.lastScreenChangeAt == mark) {
+                engine.awaitScreenChangeOrDelay(POLL_MS)
+            }
             if (engine.lastScreenChangeAt != mark) {
                 waitedLonger = true
-                settled = waitForQuiet(Timing.now())
-                screen = snapshot()
+                val second = waitForQuiet(Timing.now())
+                settled = second.first
+                screen = second.second?.screen ?: snapshot().screen
             }
         }
         Timing.log(
@@ -62,24 +72,32 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
         return screen
     }
 
-    /** Returns false if the screen was still changing at [SETTLE_TIMEOUT_MS] after [start]. */
-    private suspend fun waitForQuiet(start: Long): Boolean {
+    /** Returns `(settled, latestSnapshot)`. Reuses the snapshot taken during stability checking. */
+    private suspend fun waitForQuiet(start: Long): Pair<Boolean, SnapshotResult?> {
         val deadline = start + SETTLE_TIMEOUT_MS
         var lastText: String? = null
         var lastTextAt = 0L
+        var lastSnap: SnapshotResult? = null
         while (true) {
             val now = Timing.now()
-            if (now >= deadline) return false
+            if (now >= deadline) return false to lastSnap
             val quietFor = now - maxOf(lastActionAt, engine.lastScreenChangeAt)
             var quiet = quietFor >= QUIET_MS
+            var freshSnap: SnapshotResult? = null
             if (!quiet && now - lastActionAt >= TEXT_CHECK_MS && now - lastTextAt >= TEXT_CHECK_MS) {
-                val text = snapshot().takeIf { it.nodes.isNotEmpty() }?.fingerprint
+                val snap = snapshot()
+                freshSnap = snap
+                val text = snap.screen.takeIf { it.nodes.isNotEmpty() }?.fingerprint
                 quiet = text != null && text == lastText
                 lastText = text
                 lastTextAt = now
+                lastSnap = snap
             }
-            if (quiet && !engine.isLoading()) return true
-            delay(POLL_MS)
+            if (quiet) {
+                val snap = freshSnap ?: snapshot().also { lastSnap = it }
+                if (!snap.loading) return true to snap
+            }
+            engine.awaitScreenChangeOrDelay(POLL_MS)
         }
     }
 
@@ -87,41 +105,52 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
         lastActionAt = Timing.now()
     }
 
-    private fun snapshot(): Screen {
+    private fun snapshot(): SnapshotResult {
         val finder = engine.finder
         val root = finder.roots().firstOrNull()
         val nodes = mutableListOf<ScreenNode>()
         val map = mutableMapOf<Int, AccessibilityNodeInfo>()
         val labelled = mutableListOf<Pair<String, android.graphics.Rect>>()
+        var loading = false
         if (root != null) {
             for (node in finder.flatten(root)) {
-                if (nodes.size >= MAX_NODES) break
-                if (!node.isVisibleToUser || finder.boundsOf(node).isEmpty) continue
+                if (!node.isVisibleToUser) continue
+                // Check loading state in the same single pass.
+                if (!loading) {
+                    val isSpinner = node.className?.toString() == PROGRESS_BAR && node.rangeInfo == null
+                    val rawLabel = (node.text ?: node.contentDescription)?.toString()?.trim()
+                    if (isSpinner || (rawLabel != null && LOADING_LABEL.containsMatchIn(rawLabel))) {
+                        loading = true
+                    }
+                }
+                if (nodes.size >= MAX_NODES) continue
+                val bounds = finder.boundsOf(node)
+                if (bounds.isEmpty) continue
                 val label = labelOf(node)
                 val interactive = node.isClickable || node.isEditable || node.isScrollable
                 if (label == null && !interactive) continue
                 // A button's text child repeats the button's label; listing it again only uses up
                 // the node budget, which used to cut off whatever came last (often the bottom tabs).
-                val bounds = finder.boundsOf(node)
                 if (!interactive && labelled.any { (l, b) -> l == label && b.contains(bounds) }) continue
                 if (interactive && label != null) labelled += label to bounds
+                val clickTarget = if (node.isClickable) node else finder.clickTarget(node)
                 val id = nodes.size
                 nodes += ScreenNode(
                     id = id,
                     label = label,
                     viewId = node.viewIdResourceName?.substringAfterLast('/')?.takeIf { label == null },
-                    tappable = node.isClickable || finder.clickTarget(node) != null,
+                    tappable = clickTarget != null,
                     editable = node.isEditable,
                     scrollable = node.isScrollable,
                     enabled = node.isEnabled,
                     password = node.isPassword,
-                    tapLabels = finder.tapLabels(node)
+                    tapLabels = finder.tapLabels(node, clickTarget)
                 )
                 map[id] = node
             }
         }
         live = map
-        return Screen(root?.packageName?.toString(), nodes)
+        return SnapshotResult(Screen(root?.packageName?.toString(), nodes), loading)
     }
 
     private fun labelOf(node: AccessibilityNodeInfo): String? {

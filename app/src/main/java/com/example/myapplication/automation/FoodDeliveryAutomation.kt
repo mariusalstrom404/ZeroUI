@@ -45,22 +45,23 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
         Log.e(LOG, "[ORDER] app=$packageName restaurant=$restaurant item=$item")
 
         // 1. Search for the restaurant.
-        delay(1500) // let the launched app draw its home screen
+        engine.waitForApp(packageName, timeoutMs = 4000)
+        engine.waitForScreenToSettle(SettleRule(quietMs = 350, busyMs = 1500, maxMs = 2500))
         engine.dismissPopups(packageName)
         engine.report("Searching for “$restaurant”")
         if (!engine.typeIntoApp(restaurant, submit = true, packageName = packageName, timeoutMs = 15000)) {
             return Result.SEARCH_FAILED
         }
-        delay(1500) // results load after the search key
+        engine.waitForScreenToSettle(SettleRule(quietMs = 350, busyMs = 1500, maxMs = 2500))
 
         // 2. Open the restaurant from the results.
         if (!openRestaurant(packageName, restaurant)) return Result.RESTAURANT_NOT_FOUND
-        delay(2000)
+        engine.waitForScreenToSettle(SettleRule(quietMs = 400, busyMs = 1800, maxMs = 3000))
         engine.dismissPopups(packageName)
 
         // 3. Find the dish on the menu and open it.
         if (!openItem(packageName, item)) return Result.ITEM_NOT_FOUND
-        delay(1200)
+        engine.waitForScreenToSettle(SettleRule(quietMs = 300, busyMs = 1200, maxMs = 2000))
 
         // 4. Add it to the cart.
         return addToCart(packageName)
@@ -77,7 +78,7 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
             )
             if (!clicked) return false
             // Tapping a search *suggestion* only runs the search; the shop is then in the results.
-            delay(2500)
+            engine.waitForScreenToSettle(SettleRule(quietMs = 400, busyMs = 1800, maxMs = 3000))
             if (!onSearchScreen(packageName, restaurant)) {
                 Log.e(LOG, "[ORDER] opened restaurant (attempt ${attempt + 1})")
                 return true
@@ -103,7 +104,7 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
         Log.e(LOG, "[ORDER] “$item” not found by scrolling, trying the menu search")
         engine.report("Searching the menu for “$item”")
         if (!engine.typeIntoApp(item, submit = true, packageName = packageName, timeoutMs = 8000)) return false
-        delay(1500)
+        engine.waitForScreenToSettle(SettleRule(quietMs = 350, busyMs = 1200, maxMs = 2000))
         return engine.clickElement(
             selector, timeoutMs = 15000, scrollIfNotFound = true,
             packageName = packageName, maxScrolls = RESULT_SCROLLS
@@ -115,17 +116,17 @@ class FoodDeliveryAutomation(private val engine: AutomationEngine) {
         engine.report("Adding to cart")
         if (!engine.clickAny(selectors, timeoutMs = 8000, packageName = packageName)) {
             // Present but disabled means the dish needs choices the user has to make.
-            val disabled = selectors.any { sel ->
-                engine.findNode(sel, packageName)?.let { !(engine.finder.clickTarget(it) ?: it).isEnabled } == true
-            }
+            val disabled = engine.finder.findAny(selectors, packageName)?.second
+                ?.let { !(engine.finder.clickTarget(it) ?: it).isEnabled } == true
             return if (disabled) Result.NEEDS_OPTIONS else Result.ADD_FAILED
         }
 
         engine.report("Checking the cart")
-        val deadline = System.currentTimeMillis() + 5000
+        val indicatorSelectors = CART_INDICATORS.map { Selector(text = it) }
+        val deadline = System.currentTimeMillis() + 4500
         while (System.currentTimeMillis() < deadline) {
-            delay(500)
-            if (CART_INDICATORS.any { engine.findNode(Selector(text = it), packageName) != null }) return Result.ADDED
+            engine.awaitScreenChangeOrDelay(250)
+            if (engine.finder.findAny(indicatorSelectors, packageName) != null) return Result.ADDED
         }
         return Result.ADDED_UNVERIFIED
     }

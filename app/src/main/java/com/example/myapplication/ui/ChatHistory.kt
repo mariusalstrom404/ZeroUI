@@ -1,6 +1,7 @@
 package com.example.myapplication.ui
 
 import com.example.myapplication.Message
+import com.example.myapplication.MessageKind
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -125,6 +126,7 @@ object ChatHistoryCodec {
     private fun encode(m: Message): JSONObject {
         val o = JSONObject().put("text", m.text).put("isUser", m.isUser).put("time", m.time)
         if (m.choices.isNotEmpty()) o.put("choices", JSONArray(m.choices))
+        if (m.kind != MessageKind.NORMAL) o.put("kind", m.kind.name)
         return o
     }
 
@@ -132,7 +134,9 @@ object ChatHistoryCodec {
         (0 until array.length()).mapNotNull { i ->
             val o = array.optJSONObject(i) ?: return@mapNotNull null
             val choices = o.optJSONArray("choices")?.let { c -> List(c.length()) { c.getString(it) } } ?: emptyList()
-            Message(o.optString("text"), o.optBoolean("isUser"), choices, o.optLong("time", defaultTime))
+            val kind = runCatching { MessageKind.valueOf(o.optString("kind", MessageKind.NORMAL.name)) }
+                .getOrDefault(MessageKind.NORMAL)
+            Message(o.optString("text"), o.optBoolean("isUser"), choices, o.optLong("time", defaultTime), kind)
         }
 }
 

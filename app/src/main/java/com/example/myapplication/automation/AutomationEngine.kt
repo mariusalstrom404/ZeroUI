@@ -12,9 +12,14 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.myapplication.MyAccessibilityService
 import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -24,8 +29,8 @@ class AutomationEngine(private val service: AccessibilityService) {
         private const val TAG = "AutomationEngine"
         private const val LOG = "ZeroUIAutomation"
         private const val DEFAULT_TIMEOUT = 10000L
-        private const val POLL_INTERVAL = 400L
-        private const val SETTLE_POLL_MS = 100L
+        private const val POLL_INTERVAL = 180L
+        private const val SETTLE_POLL_MS = 60L
         private const val SYSTEM_UI = "com.android.systemui"
         private const val PROGRESS_BAR = "android.widget.ProgressBar"
         private val LOADING_LABEL = Regex("^(loading|please wait|載入中|加載中|正在載入|正在加载)", RegexOption.IGNORE_CASE)
@@ -34,21 +39,36 @@ class AutomationEngine(private val service: AccessibilityService) {
          * How long a screen gets to populate before we start scrolling to look for an element.
          * Scrolling immediately used to push the target off screen while the screen was still loading.
          */
-        private const val SCROLL_SETTLE_MS = 2000L
+        private const val SCROLL_SETTLE_MS = 1200L
         /** Time for the window manager to apply [onGesturePassThrough] before a gesture is injected. */
-        private const val PASS_THROUGH_SETTLE_MS = 60L
+        private const val PASS_THROUGH_SETTLE_MS = 50L
         /** Search entries tried before giving up: a wrong first guess shouldn't end the search. */
         private const val MAX_ENTRY_ATTEMPTS = 3
         /** How long a tapped search entry gets to open its text field before the next is tried. */
-        private const val ENTRY_OPEN_MS = 2500L
+        private const val ENTRY_OPEN_MS = 1800L
         /** How long a quick typing check looks for the text before falling back to pasting. */
-        private const val QUICK_VERIFY_MS = 1000L
+        private const val QUICK_VERIFY_MS = 900L
 
         /** Promo/permission/sign-in popups that cover real apps after launch or on new screens. */
         private val DISMISS = listOf(
             "Not now", "Maybe later", "No thanks", "Skip", "Close", "Got it", "OK", "Dismiss",
             "稍後", "稍後再說", "以後再說", "略過", "跳過", "關閉", "知道了", "我知道了"
         )
+        private val DISMISS_SELECTORS = DISMISS.map { Selector(text = it, exact = true) } +
+            Selector(contentDescription = "Close", exact = true) +
+            Selector(contentDescription = "Dismiss", exact = true) +
+            Selector(contentDescription = "關閉", exact = true)
+    }
+
+    /** Event-driven wakeup signal fired whenever the foreground app changes on screen. */
+    private val screenEvents = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    /** Suspends until either the screen changes or [maxMs] elapses — whichever happens first. */
+    suspend fun awaitScreenChangeOrDelay(maxMs: Long) {
+        withTimeoutOrNull(maxMs) { screenEvents.first() }
     }
 
     val finder = NodeFinder(service)
@@ -107,7 +127,7 @@ class AutomationEngine(private val service: AccessibilityService) {
                     StepType.WAIT_FOR -> waitForElement(step.selector, step.timeoutMs) != null
                     StepType.BACK -> {
                         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-                        delay(500)
+                        awaitScreenChangeOrDelay(350)
                         true
                     }
                     StepType.CUSTOM -> step.action?.invoke() ?: true
@@ -125,7 +145,7 @@ class AutomationEngine(private val service: AccessibilityService) {
                 return false
             }
             Log.d(TAG, "Step success: ${step.description}")
-            delay(500) // Small stability delay between steps
+            awaitScreenChangeOrDelay(220) // Event-driven inter-step settle
         }
         return true
     }
@@ -170,7 +190,7 @@ class AutomationEngine(private val service: AccessibilityService) {
                 Timing.log("App $packageName in front after ${SystemClock.elapsedRealtime() - start} ms")
                 return true
             }
-            delay(SETTLE_POLL_MS)
+            awaitScreenChangeOrDelay(SETTLE_POLL_MS)
         }
         Timing.log("App $packageName not in front after $timeoutMs ms")
         return false
@@ -185,6 +205,7 @@ class AutomationEngine(private val service: AccessibilityService) {
             event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         ) {
             lastScreenChange = SystemClock.elapsedRealtime()
+            screenEvents.tryEmit(Unit)
         }
     }
 
@@ -204,7 +225,7 @@ class AutomationEngine(private val service: AccessibilityService) {
                 )
                 return state == SettleRule.State.SETTLED
             }
-            delay(SETTLE_POLL_MS)
+            awaitScreenChangeOrDelay(SETTLE_POLL_MS)
         }
     }
 
@@ -272,11 +293,13 @@ class AutomationEngine(private val service: AccessibilityService) {
                 }
             }
 
-            delay(POLL_INTERVAL)
+            awaitScreenChangeOrDelay(POLL_INTERVAL)
         }
 
-        Log.e(LOG, "[FIND] TIMEOUT target=$selector, dumping tree for debug:")
-        finder.roots(packageName).forEach { logNodeTree(it, 0) }
+        if (MyAccessibilityService.DebugConfig.ENABLE_ACCESSIBILITY_TREE_DUMP) {
+            Log.e(LOG, "[FIND] TIMEOUT target=$selector, dumping tree for debug:")
+            finder.roots(packageName).forEach { logNodeTree(it, 0) }
+        }
         return null
     }
 
@@ -286,6 +309,7 @@ class AutomationEngine(private val service: AccessibilityService) {
     }
 
     private fun dumpTreeOnce(packageName: String?) {
+        if (!MyAccessibilityService.DebugConfig.ENABLE_ACCESSIBILITY_TREE_DUMP) return
         if (hasDumpedTree || packageName == null) return
         val roots = finder.roots(packageName)
         if (roots.isEmpty()) return
@@ -330,18 +354,22 @@ class AutomationEngine(private val service: AccessibilityService) {
     /** With [settle] false the caller waits for the screen itself (the screen agent does). */
     suspend fun back(settle: Boolean = true) {
         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-        if (settle) delay(800)
+        if (settle) awaitScreenChangeOrDelay(450)
     }
 
-    /** Closes a promo or permission popup if one is showing. Exact matches only, short wait. */
+    /**
+     * Closes a promo or permission popup if one is showing.
+     * Single-pass tree scan: returns immediately (<20ms) when no popup is visible instead of
+     * polling 19 selectors for 1.2s.
+     */
     suspend fun dismissPopups(packageName: String?): Boolean {
-        val selectors = DISMISS.map { Selector(text = it, exact = true) } +
-            Selector(contentDescription = "Close", exact = true) +
-            Selector(contentDescription = "Dismiss", exact = true) +
-            Selector(contentDescription = "關閉", exact = true)
-        if (!clickAny(selectors, timeoutMs = 1200, packageName = packageName)) return false
-        Log.e(LOG, "[POPUP] dismissed a popup")
-        delay(800)
+        val hit = finder.findAny(DISMISS_SELECTORS, packageName) ?: return false
+        val (_, node) = hit
+        val target = finder.clickTarget(node)
+        if (!(target ?: node).isEnabled) return false
+        if (!performClick(node, target)) return false
+        Log.d(LOG, "[POPUP] dismissed a popup")
+        waitForScreenToSettle(SettleRule(quietMs = 250, busyMs = 700, maxMs = 1000))
         return true
     }
 
@@ -364,14 +392,14 @@ class AutomationEngine(private val service: AccessibilityService) {
             if (remaining <= 0) break
             val node = waitForElement(selector, remaining, scrollIfNotFound, packageName, maxScrolls) ?: break
             if (!node.refresh()) { // UI changed between find and click; look again
-                delay(POLL_INTERVAL)
+                awaitScreenChangeOrDelay(POLL_INTERVAL)
                 continue
             }
             val target = finder.clickTarget(node)
             if (!(target ?: node).isEnabled) {
-                Log.e(LOG, "[CLICK] $selector is disabled, waiting")
+                Log.d(LOG, "[CLICK] $selector is disabled, waiting")
                 report("Waiting for “${selector.label()}” to become available")
-                delay(POLL_INTERVAL)
+                awaitScreenChangeOrDelay(POLL_INTERVAL)
                 continue
             }
             report("Tapping “${selector.label()}”")
@@ -391,19 +419,20 @@ class AutomationEngine(private val service: AccessibilityService) {
         val startTime = System.currentTimeMillis()
         // Exact matches of any selector first, so a loose match on an earlier phrase
         // ("Add to cart" ≈ some other label) can't beat an exact later one ("Add to order").
-        val passes = listOf(selectors.map { it.copy(exact = true) }, selectors.filterNot { it.exact })
+        val ordered = selectors.map { it.copy(exact = true) } + selectors.filterNot { it.exact }
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            for (selector in passes.flatten()) {
-                val node = finder.find(selector, packageName) ?: continue
+            val hit = finder.findAny(ordered, packageName)
+            if (hit != null) {
+                val (selector, node) = hit
                 val target = finder.clickTarget(node)
                 if ((target ?: node).isEnabled) {
                     report("Tapping “${selector.label()}”")
                     return performClick(node, target)
                 }
             }
-            delay(POLL_INTERVAL)
+            awaitScreenChangeOrDelay(POLL_INTERVAL)
         }
-        Log.e(LOG, "[CLICK] none of $selectors found")
+        Log.d(LOG, "[CLICK] none of $selectors found")
         report("Couldn't find “${selectors.firstOrNull()?.label() ?: "element"}”")
         return false
     }
@@ -592,7 +621,7 @@ class AutomationEngine(private val service: AccessibilityService) {
             if (!node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)) {
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
-            delay(300)
+            awaitScreenChangeOrDelay(180)
         }
 
         var field: AccessibilityNodeInfo = node
@@ -600,39 +629,39 @@ class AutomationEngine(private val service: AccessibilityService) {
         if (!actionResult) {
             // Focusing can re-create the field (or move to a dedicated search field); retry on the
             // field that holds focus now, then fall back to pasting.
-            delay(300)
+            awaitScreenChangeOrDelay(200)
             field = finder.focusedEditable(packageName) ?: refind() ?: node
             actionResult = setText(field, text) || pasteText(field, text)
         }
 
         if (actionResult) {
-            // Wait for UI to update; a quick check starts looking straight away instead.
-            if (!quick) delay(800)
+            // Check quickly once the UI updates instead of always sleeping 800ms.
+            if (!quick) awaitScreenChangeOrDelay(180)
 
             val startTime = System.currentTimeMillis()
-            val verifyMs = if (quick) QUICK_VERIFY_MS else 3000L
+            val verifyMs = if (quick) QUICK_VERIFY_MS else 2200L
             while (System.currentTimeMillis() - startTime < verifyMs) {
                 val freshText = if (field.refresh()) field.text?.toString() ?: "" else ""
-                Log.e(LOG, "[INPUT] freshText=$freshText")
+                Log.d(LOG, "[INPUT] freshText=$freshText")
 
                 if (freshText.contains(text, ignoreCase = true)) {
-                    Log.e(LOG, "[INPUT] VERIFIED SUCCESS")
+                    Log.d(LOG, "[INPUT] VERIFIED SUCCESS")
                     lastInputVerified = true
                     return field
                 }
 
                 // Second success condition: the text appears elsewhere (e.g. search results)
                 if (finder.find(Selector(text = text, classNameExclude = "EditText"), packageName) != null) {
-                    Log.e(LOG, "[INPUT] VERIFIED SUCCESS (Result found on screen)")
+                    Log.d(LOG, "[INPUT] VERIFIED SUCCESS (Result found on screen)")
                     lastInputVerified = true
                     return field
                 }
-                delay(300)
+                awaitScreenChangeOrDelay(180)
             }
-            Log.e(LOG, "[INPUT] VERIFICATION TIMEOUT, retrying with paste")
+            Log.d(LOG, "[INPUT] VERIFICATION TIMEOUT, retrying with paste")
             field = finder.focusedEditable(packageName) ?: field
             pasteText(field, text)
-            delay(800)
+            awaitScreenChangeOrDelay(400)
             // Some fields never expose their text, so this doesn't block the workflow; callers
             // that tell the user what was typed check [lastInputVerified].
             lastInputVerified = field.refresh() && field.text?.toString()?.contains(text, ignoreCase = true) == true
