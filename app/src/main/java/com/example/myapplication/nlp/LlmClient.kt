@@ -40,7 +40,7 @@ data class LlmAnswer(
 
 interface LlmClient {
     @Throws(LlmUnavailableException::class)
-    suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand>
+    suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String? = null): List<LlmCommand>
 
     /** [slot] names the detail being collected, or "CONFIRMATION" for a yes/no question. */
     @Throws(LlmUnavailableException::class)
@@ -64,52 +64,81 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
 
     override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenTurn {
         val input = LlmJson.screenInput(StayDate.today(), goal, history, screen)
-        val text = post("screen_action", "agent_prompt.txt", "agent_schema.json", input, "step ${history.size + 1}")
+        val text = post("screen_action", "agent_prompt.txt", "agent_schema.json", input, "step ${history.size + 1}", preferredEffort = AGENT_REASONING_EFFORT)
         return LlmJson.screenTurn(text)
     }
 
-    override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
-        val input = LlmJson.commandInput(today, utterance)
-        return LlmJson.commands(post("voice_commands", "command_prompt.txt", "command_schema.json", input), today)
+    override suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String?): List<LlmCommand> {
+        val input = LlmJson.commandInput(today, utterance, foregroundApp)
+        return LlmJson.commands(post("voice_commands", "command_prompt.txt", "command_schema.json", input, preferredEffort = FAST_REASONING_EFFORT), today)
     }
 
     override suspend fun understandAnswer(slot: String, question: String, answer: String, today: StayDate): LlmAnswer {
         val input = LlmJson.answerInput(today, slot, question, answer)
-        return LlmJson.answer(post("follow_up_answer", "answer_prompt.txt", "answer_schema.json", input, slot), today)
+        return LlmJson.answer(post("follow_up_answer", "answer_prompt.txt", "answer_schema.json", input, slot, preferredEffort = FAST_REASONING_EFFORT), today)
     }
 
     /**
      * Opens the connection to OpenAI ahead of the first request, so its setup isn't waited for
-     * after the user finishes speaking. A small, free request; failures are ignored.
+     * after the user finishes speaking. Throttled by [WARMUP_COOLDOWN_MS] so an active pooled
+     * connection isn't occupied by a redundant GET right before a real POST.
      */
     suspend fun warmUp() = withContext(Dispatchers.IO) {
-        if (!configured()) return@withContext
-        val start = Timing.now()
+        if (!isConfigured()) return@withContext
+        val now = Timing.now()
+        if (now - lastNetworkActivityAt < WARMUP_COOLDOWN_MS) return@withContext
+        if (!warmingUp.compareAndSet(false, true)) return@withContext
         try {
             val connection = open("$API_URL/models/${LlmSecrets.OPENAI_MODEL}", "GET")
             val status = connection.responseCode
             readFully(connection, status)
-            Timing.log("OpenAI warm-up: ${Timing.now() - start} ms (status $status)")
+            lastNetworkActivityAt = Timing.now()
+            Timing.log("OpenAI warm-up: ${lastNetworkActivityAt - now} ms (status $status)")
         } catch (e: IOException) {
-            Timing.log("OpenAI warm-up failed after ${Timing.now() - start} ms: ${e.message}")
+            Timing.log("OpenAI warm-up failed after ${Timing.now() - now} ms: ${e.message}")
+        } finally {
+            warmingUp.set(false)
         }
     }
 
-    private suspend fun post(name: String, promptFile: String, schemaFile: String, input: String, detail: String? = null): String =
+    private suspend fun post(
+        name: String,
+        promptFile: String,
+        schemaFile: String,
+        input: String,
+        detail: String? = null,
+        preferredEffort: String = FAST_REASONING_EFFORT
+    ): String =
         withContext(Dispatchers.IO) {
-            if (!configured()) throw LlmUnavailableException("LlmSecrets.kt is not filled in")
+            if (!isConfigured()) throw LlmUnavailableException("LlmSecrets.kt is not filled in")
             val label = if (detail == null) name else "$name ($detail)"
-            val effort = if (reasoningRejected) null else REASONING_EFFORT
-            val (status, reply) = send(label, name, promptFile, schemaFile, input, effort)
-            if (status == HttpURLConnection.HTTP_BAD_REQUEST && effort != null && reply.contains("reasoning")) {
-                // This model has no reasoning setting; ask again without it, and from now on.
-                reasoningRejected = true
-                Timing.log("OpenAI $label: the model doesn't take a reasoning effort, sending without it")
-                val (retryStatus, retryReply) = send(label, name, promptFile, schemaFile, input, null)
-                return@withContext checked(label, retryStatus, retryReply)
+            var effort: String? = resolveEffort(preferredEffort)
+            var (status, reply) = send(label, name, promptFile, schemaFile, input, effort)
+            // If the model rejects "minimal" (or reasoning altogether), step down once and remember it.
+            while (status == HttpURLConnection.HTTP_BAD_REQUEST && effort != null && reply.contains("reasoning")) {
+                val next = nextLowerEffort(effort)
+                rejectedEfforts.add(effort)
+                Timing.log("OpenAI $label: effort '$effort' rejected, retrying with ${next ?: "none"}")
+                effort = next
+                val retry = send(label, name, promptFile, schemaFile, input, effort)
+                status = retry.first
+                reply = retry.second
             }
             checked(label, status, reply)
         }
+
+    private fun resolveEffort(preferred: String): String? {
+        var candidate: String? = preferred
+        while (candidate != null && candidate in rejectedEfforts) {
+            candidate = nextLowerEffort(candidate)
+        }
+        return candidate
+    }
+
+    private fun nextLowerEffort(effort: String): String? = when (effort) {
+        "minimal" -> "low"
+        else -> null
+    }
 
     private fun checked(label: String, status: Int, reply: String): String {
         if (status != HttpURLConnection.HTTP_OK) {
@@ -144,6 +173,7 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
             val answered = Timing.now()
             val reply = readFully(connection, status)
             val done = Timing.now()
+            lastNetworkActivityAt = done
             // A long "connect and send" means a new connection was set up; a reused one takes a few ms.
             Timing.log(
                 "OpenAI $label: ${done - start} ms (connect and send ${sent - start}, " +
@@ -155,9 +185,6 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
             throw LlmUnavailableException("Couldn't reach OpenAI", e)
         }
     }
-
-    private fun configured() =
-        !LlmSecrets.OPENAI_API_KEY.startsWith("PASTE_") && !LlmSecrets.OPENAI_MODEL.startsWith("PASTE_")
 
     private fun open(url: String, method: String) =
         (URL(url).openConnection() as HttpURLConnection).apply {
@@ -179,22 +206,29 @@ class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
     private fun asset(file: String): String =
         assetCache.getOrPut(file) { assets.open("llm/$file").bufferedReader().use { it.readText() } }
 
-    private companion object {
-        const val API_URL = "https://api.openai.com/v1"
-        const val CONNECT_TIMEOUT_MS = 5000
-        const val READ_TIMEOUT_MS = 10000
+    companion object {
+        private const val API_URL = "https://api.openai.com/v1"
+        private const val CONNECT_TIMEOUT_MS = 5000
+        private const val READ_TIMEOUT_MS = 10000
+        private const val WARMUP_COOLDOWN_MS = 25_000L
 
-        /**
-         * Kept to the least the model needs for these short tasks. If the timing log still shows
-         * many reasoning tokens and the model supports a lower setting ("minimal" or "none"), use it.
-         * A setting the model rejects only costs one retried request.
-         */
-        const val REASONING_EFFORT = "low"
+        /** Short classification & follow-up parsing prefer minimal reasoning for lower latency. */
+        private const val FAST_REASONING_EFFORT = "minimal"
+        /** Multi-step screen navigation keeps low reasoning for better decision accuracy. */
+        private const val AGENT_REASONING_EFFORT = "low"
 
-        /** Set once OpenAI said the model takes no reasoning effort; shared by every client. */
-        @Volatile var reasoningRejected = false
+        private val rejectedEfforts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        private val warmingUp = java.util.concurrent.atomic.AtomicBoolean(false)
+        @Volatile private var lastNetworkActivityAt = 0L
 
         /** Prompts and schemas never change while the app runs. */
-        val assetCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+        private val assetCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        /** True when both API key and model in [LlmSecrets] are filled with non-placeholder values. */
+        fun isConfigured(): Boolean =
+            LlmSecrets.OPENAI_API_KEY.isNotBlank() &&
+                LlmSecrets.OPENAI_MODEL.isNotBlank() &&
+                !LlmSecrets.OPENAI_API_KEY.startsWith("PASTE_") &&
+                !LlmSecrets.OPENAI_MODEL.startsWith("PASTE_")
     }
 }

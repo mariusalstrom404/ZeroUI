@@ -16,7 +16,7 @@ class CommandConversationTest {
         var parseCalls = 0
         var answerCalls = 0
 
-        override suspend fun parseCommand(utterance: String, today: StayDate): List<LlmCommand> {
+        override suspend fun parseCommand(utterance: String, today: StayDate, foregroundApp: String?): List<LlmCommand> {
             parseCalls++
             if (unavailable) throw LlmUnavailableException("down")
             return commands
@@ -44,6 +44,45 @@ class CommandConversationTest {
     fun simpleCommandRunsAtOnce() {
         commands(AppIntent.TakeScreenshot)
         assertEquals(listOf<AppIntent>(AppIntent.TakeScreenshot), say("take a screenshot").run)
+    }
+
+    @Test
+    fun nonsenseIsMarkedNotUnderstood() {
+        commands(AppIntent.Unknown)
+        val turn = say("dada")
+        assertTrue(turn.run.isEmpty())
+        assertEquals(false, turn.understood)
+    }
+
+    @Test
+    fun partlyUnderstoodStillRuns() {
+        commands(AppIntent.Unknown, AppIntent.TakeScreenshot)
+        val turn = say("blah and take a screenshot please, sort of")
+        assertEquals(true, turn.understood)
+        assertEquals(listOf<AppIntent>(AppIntent.TakeScreenshot), turn.run)
+    }
+
+    @Test
+    fun systemCommandSkipsTheLlm() {
+        val turn = say("turn on wifi and open the calculator")
+        assertEquals(
+            listOf(AppIntent.SystemToggle(SystemSetting.WIFI, true), AppIntent.OpenSystemApp(SystemApp.CALCULATOR)),
+            turn.run
+        )
+        assertEquals(0, llm.parseCalls)
+    }
+
+    @Test
+    fun systemCommandWorksOffline() {
+        llm.unavailable = true
+        assertEquals(listOf<AppIntent>(AppIntent.SystemControl(SystemAction.HOME)), say("go home").run)
+    }
+
+    @Test
+    fun otherCommandsStillGoToTheLlm() {
+        commands(AppIntent.AppTask("message Bob"))
+        say("turn on wifi and message Bob")
+        assertEquals(1, llm.parseCalls)
     }
 
     @Test
@@ -241,5 +280,27 @@ class CommandConversationTest {
         llm.answer = LlmAnswer(LlmAnswer.Status.FILLED, checkIn = StayDate(2026, 12, 5), checkOut = StayDate(2026, 12, 7))
         assertTrue(say("the first weekend of December").says.single().contains("How many guests"))
         assertEquals(1, llm.answerCalls)
+    }
+
+    @Test
+    fun alarmFollowUpParsesLocallyWithoutLlm() {
+        val askTurn = say("幫我設鬧鐘")
+        assertTrue(askTurn.run.isEmpty())
+        assertTrue(askTurn.choices.isNotEmpty())
+        val doneTurn = say("早上七點半")
+        assertEquals(listOf<AppIntent>(AppIntent.SetAlarm(7, 30)), doneTurn.run)
+        assertEquals(0, llm.parseCalls)
+        assertEquals(0, llm.answerCalls)
+    }
+
+    @Test
+    fun timerFollowUpParsesLocallyWithoutLlm() {
+        val askTurn = say("幫我倒計時")
+        assertTrue(askTurn.run.isEmpty())
+        assertTrue(askTurn.choices.isNotEmpty())
+        val doneTurn = say("10 分鐘")
+        assertEquals(listOf<AppIntent>(AppIntent.SetTimer(600)), doneTurn.run)
+        assertEquals(0, llm.parseCalls)
+        assertEquals(0, llm.answerCalls)
     }
 }

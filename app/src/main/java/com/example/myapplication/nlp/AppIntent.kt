@@ -20,9 +20,27 @@ sealed class AppIntent(val requiresConfirmation: Boolean = false) {
     data object Greeting : AppIntent()
     data object SaveHistory : AppIntent()
     data object ClearHistory : AppIntent()
+    data object ViewOperationHistory : AppIntent()
     data object RepeatLast : AppIntent()
     data object TakeScreenshot : AppIntent()
     data class CameraAction(val takePhoto: Boolean = false) : AppIntent()
+    /** Switches [setting] on ([enable] true), off (false), or to the other state (null). */
+    data class SystemToggle(val setting: SystemSetting, val enable: Boolean?) : AppIntent()
+    /** Home, back, recents, notifications, lock screen and the like. */
+    data class SystemControl(val action: SystemAction) : AppIntent()
+    data class OpenSettings(val page: SettingsPage) : AppIntent()
+    /** A built-in app found by its role, such as the dialer or calculator. */
+    data class OpenSystemApp(val app: SystemApp) : AppIntent()
+
+    // --- Everyday assistant (Siri-like quick actions) ---
+    /** Live weather query. [location] null means user's current city; [dayOffset] 0=today, 1=tomorrow, 2=day after. */
+    data class Weather(val location: String? = null, val dayOffset: Int = 0) : AppIntent()
+    /** Sets an alarm in the system Clock app (24-hour [hour]:[minute]). */
+    data class SetAlarm(val hour: Int?, val minute: Int? = 0, val label: String? = null) : AppIntent()
+    /** Starts a countdown timer in the system Clock app for [durationSeconds] seconds. */
+    data class SetTimer(val durationSeconds: Int?, val label: String? = null) : AppIntent()
+    /** Reads the current local time and date. */
+    data object CurrentTime : AppIntent()
 
     // --- Navigation / apps ---
     data class Navigate(val destination: String?, val mode: String? = null) : AppIntent()

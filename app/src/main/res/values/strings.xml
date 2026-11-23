@@ -1,4 +1,120 @@
 <resources>
     <string name="app_name">ZeroUI</string>
-    <string name="accessibility_service_description">This service allows the app to perform NLP-based commands like clicking or scrolling on your behalf.</string>
+    <string name="accessibility_service_description">Allows ZeroUI to understand your voice commands and tap, scroll, or type in apps on your behalf. Never captures screenshots or reads password fields.</string>
+
+    <!-- Header & Status -->
+    <string name="status_ready">Ready</string>
+    <string name="status_listening">Listening</string>
+    <string name="status_working">Working</string>
+    <string name="status_waiting_reply">Needs reply</string>
+    <string name="cd_mute_tts">Mute voice replies</string>
+    <string name="cd_unmute_tts">Unmute voice replies</string>
+    <string name="cd_history">Operation history &amp; shortcuts</string>
+    <string name="cd_settings">Settings &amp; permissions</string>
+    <string name="cd_minimize">Minimize ZeroUI</string>
+    <string name="cd_clear_chat">Clear conversation</string>
+    <string name="cd_speak">Start speaking</string>
+    <string name="cd_stop_listening">Stop listening</string>
+    <string name="cd_stop_task">Stop current task</string>
+    <string name="cd_send">Send message</string>
+    <string name="cd_copy">Copy text</string>
+    <string name="cd_rerun">Run again</string>
+    <string name="cd_pin">Pin shortcut</string>
+    <string name="cd_unpin">Unpin shortcut</string>
+    <string name="cd_dismiss">Dismiss</string>
+
+    <!-- Input & Banners -->
+    <string name="input_placeholder">Ask ZeroUI to do anything…</string>
+    <string name="input_placeholder_working">Working on it… tap stop to cancel</string>
+    <string name="input_placeholder_answering">Speak or type your answer…</string>
+    <string name="heard_listening">Listening…</string>
+    <string name="banner_awaiting_title">Waiting for your answer</string>
+    <string name="banner_awaiting_subtitle">Your next message will answer the active task</string>
+    <string name="action_cancel_task">Cancel task</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="copied_feedback">Copied to clipboard</string>
+
+    <!-- Welcome & Capability Categories -->
+    <string name="welcome_title">How can I help?</string>
+    <string name="welcome_subtitle">Speak naturally or tap a suggestion below — I can chain multiple actions across apps.</string>
+    <string name="section_pinned">Pinned shortcuts</string>
+    <string name="section_try_asking">Try asking</string>
+    <string name="cat_device">Device Control</string>
+    <string name="cat_device_ex1">Check my battery</string>
+    <string name="cat_device_ex2">Turn on the flashlight</string>
+    <string name="cat_daily">Daily Assistant</string>
+    <string name="cat_daily_ex1">What\'s the weather today?</string>
+    <string name="cat_daily_ex2">Set a timer for 5 minutes</string>
+    <string name="cat_navigate">Navigation</string>
+    <string name="cat_navigate_ex1">Take me to the airport</string>
+    <string name="cat_food">Food Delivery</string>
+    <string name="cat_food_ex1">Search for pizza on Foodpanda</string>
+    <string name="cat_travel">Travel &amp; Stays</string>
+    <string name="cat_travel_ex1">Find a hotel in Tokyo on Booking.com</string>
+
+    <!-- Message Labels -->
+    <string name="badge_confirm_title">Confirmation required</string>
+    <string name="badge_handover_title">Paused for your safety</string>
+    <string name="badge_error_title">Could not complete</string>
+
+    <!-- Setup & Onboarding -->
+    <string name="setup_title">Finish setting up ZeroUI</string>
+    <string name="setup_progress">%1$d of %2$d ready</string>
+    <string name="setup_mic_label">Microphone</string>
+    <string name="setup_mic_desc">Hear your voice commands</string>
+    <string name="setup_a11y_label">Accessibility service</string>
+    <string name="setup_a11y_desc">Tap and type inside other apps</string>
+    <string name="setup_write_label">Modify system settings (optional)</string>
+    <string name="setup_write_desc">Adjust screen brightness by voice</string>
+    <string name="action_turn_on">Turn on</string>
+    <string name="status_enabled">Enabled</string>
+    <string name="status_missing">Not enabled</string>
+    <string name="err_open_settings">Couldn\'t open Settings on this device.</string>
+
+    <!-- Accessibility Guide Dialog -->
+    <string name="a11y_guide_title">Enable Accessibility Service</string>
+    <string name="a11y_guide_step1">1. Open Android Accessibility settings below.</string>
+    <string name="a11y_guide_step2">2. Tap “Downloaded apps” (or “Installed services”) and select ZeroUI.</string>
+    <string name="a11y_guide_step3">3. Turn on “Use ZeroUI” and allow control.</string>
+    <string name="a11y_guide_restricted">On Android 13+, if the switch is grayed out: open App Info for ZeroUI → tap ⋮ (top right) → “Allow restricted settings”.</string>
+    <string name="a11y_guide_privacy">Privacy promise: ZeroUI never takes screenshots for AI, never reads password fields, and always stops before payments.</string>
+    <string name="a11y_guide_open_btn">Open Accessibility Settings</string>
+
+    <!-- History Sheet -->
+    <string name="history_title">Activity &amp; Shortcuts</string>
+    <string name="history_recent">Recent automations</string>
+    <string name="history_empty_title">No operations recorded yet</string>
+    <string name="history_empty_subtitle">Tasks you run across apps will appear here so you can re-run or pin them in one tap.</string>
+    <string name="history_clear">Clear activity</string>
+    <string name="history_status_success">Done</string>
+    <string name="history_status_failed">Failed</string>
+    <string name="history_status_cancelled">Stopped</string>
+    <string name="history_status_needs_input">Needs input</string>
+
+    <!-- Settings Sheet -->
+    <string name="settings_title">Settings &amp; Controls</string>
+    <string name="settings_section_permissions">Permissions</string>
+    <string name="settings_section_voice">Voice &amp; Speech</string>
+    <string name="settings_mute_tts">Mute spoken replies</string>
+    <string name="settings_mute_tts_desc">Keep responses silent in quiet places</string>
+    <string name="settings_speech_rate">Voice speed</string>
+    <string name="settings_speech_lang">Recognition language</string>
+    <string name="lang_auto">System default</string>
+    <string name="lang_en">English (US)</string>
+    <string name="lang_zh_tw">繁體中文</string>
+    <string name="settings_section_overlay">Floating Mic Button</string>
+    <string name="settings_show_floating">Show floating mic over apps</string>
+    <string name="settings_show_floating_desc">Quickly summon ZeroUI from any screen</string>
+    <string name="settings_auto_dim">Auto-dim &amp; tuck at edge</string>
+    <string name="settings_auto_dim_desc">Fades and peeks along the edge when idle</string>
+    <string name="settings_reset_pos">Reset button position</string>
+    <string name="settings_section_conversation">Conversation &amp; Privacy</string>
+    <string name="settings_llm_status">AI language service</string>
+    <string name="settings_llm_configured">API key configured</string>
+    <string name="settings_llm_missing">API key not configured</string>
+    <string name="settings_clear_chat">Clear chat conversation</string>
+    <string name="settings_privacy_note">Spoken text and visible screen labels (never screenshots or passwords) are sent to OpenAI only when needed to understand or execute a task.</string>
+    <string name="floating_hidden_toast">Floating mic hidden. Re-enable anytime in ZeroUI Settings.</string>
 </resources>

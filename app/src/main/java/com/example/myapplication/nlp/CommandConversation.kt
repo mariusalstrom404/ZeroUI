@@ -10,17 +10,21 @@ package com.example.myapplication.nlp
  */
 class CommandConversation(
     private val llm: LlmClient,
+    /** Commands understood without the LLM, or null to ask it; see [FastPathParser]. */
+    private val fastPath: (String) -> List<AppIntent>? = FastPathParser::parse,
     private val today: () -> StayDate = { StayDate.today() }
 ) {
 
     /**
      * What to do for one utterance: say [says] in order, then run [run] in order. [choices] are
-     * answers to the last thing said that the user can tap instead of saying.
+     * answers to the last thing said that the user can tap instead of saying. [understood] is false
+     * when nothing in the utterance made sense, which may well have been background noise.
      */
     data class Turn(
         val says: List<String> = emptyList(),
         val run: List<AppIntent> = emptyList(),
-        val choices: List<String> = emptyList()
+        val choices: List<String> = emptyList(),
+        val understood: Boolean = true
     )
 
     private sealed class Waiting {
@@ -34,12 +38,24 @@ class CommandConversation(
     private val ready = mutableListOf<AppIntent>()
     private var lastRun: List<AppIntent> = emptyList()
 
-    suspend fun handle(utterance: String): Turn {
+    /** A question was asked and the next utterance answers it. */
+    val isWaiting: Boolean
+        get() = waiting != null
+
+    /** Drops an unanswered question and anything queued behind it, as when a new conversation starts. */
+    fun reset() {
+        waiting = null
+        queue.clear()
+        ready.clear()
+    }
+
+    suspend fun handle(utterance: String, foregroundApp: String? = null): Turn {
         val says = mutableListOf<String>()
         when (val current = waiting) {
             null -> {
-                val commands = try {
-                    llm.parseCommand(utterance, today())
+                // Plain system & daily commands are understood on the phone, without waiting for the LLM.
+                val commands = fastPath(utterance)?.map { LlmCommand(it) } ?: try {
+                    llm.parseCommand(utterance, today(), foregroundApp)
                 } catch (e: LlmUnavailableException) {
                     return Turn(listOf(UNAVAILABLE))
                 }
@@ -58,6 +74,7 @@ class CommandConversation(
     private fun advance(says: MutableList<String>): Turn {
         // Still waiting, e.g. an answer wasn't understood and the question is asked again.
         if (waiting != null) return Turn(says, choices = waitingChoices())
+        var sawUnknown = false
         while (queue.isNotEmpty()) {
             val command = queue.removeFirst()
             val intent = command.intent
@@ -67,7 +84,10 @@ class CommandConversation(
                     // Back through the queue, so a repeated transfer is confirmed again.
                     else queue.addAll(0, lastRun.map { LlmCommand(it) })
                 }
-                intent === AppIntent.Unknown -> says += "Sorry, I didn't understand that."
+                intent === AppIntent.Unknown -> {
+                    says += "Sorry, I didn't understand that."
+                    sawUnknown = true
+                }
                 intent is AppIntent.HotelSearch && intent.book -> {
                     val conversation = BookingConversation(intent, today(), command.bookingQuestions)
                     if (!applyBooking(conversation, conversation.start(), says)) return Turn(says)
@@ -91,7 +111,7 @@ class CommandConversation(
         val run = ready.toList()
         ready.clear()
         if (run.isNotEmpty()) lastRun = run
-        return Turn(says, run)
+        return Turn(says, run, understood = !(sawUnknown && run.isEmpty()))
     }
 
     private suspend fun answerDetail(current: Waiting.Detail, answer: String, says: MutableList<String>) {
@@ -173,6 +193,8 @@ class CommandConversation(
 
     private fun choicesFor(slot: FollowUpSlot): List<String> = when (slot) {
         FollowUpSlot.MODE -> listOf("Bus", "Walking", "Driving")
+        FollowUpSlot.ALARM_TIME -> listOf("07:00", "07:30", "08:00", "09:00")
+        FollowUpSlot.DURATION -> listOf("3 分鐘", "5 分鐘", "10 分鐘", "15 分鐘")
         else -> emptyList()
     }
 
