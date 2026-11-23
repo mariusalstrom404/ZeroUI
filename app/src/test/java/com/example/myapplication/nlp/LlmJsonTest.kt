@@ -194,6 +194,18 @@ class LlmJsonTest {
             LlmJson.screenAction("""{"action":"tap","node":7,"text":null,"submit":false,"say":null}""")
         )
         assertEquals(
+            ScreenAction.LongPress(3),
+            LlmJson.screenAction("""{"action":"long_press","node":3,"text":null,"submit":false,"say":null}""")
+        )
+        assertEquals(
+            ScreenAction.ScrollLeft(5),
+            LlmJson.screenAction("""{"action":"scroll_left","node":5,"text":null,"submit":false,"say":null}""")
+        )
+        assertEquals(
+            ScreenAction.ScrollDown(2),
+            LlmJson.screenAction("""{"action":"scroll_down","node":2,"text":null,"submit":false,"say":null}""")
+        )
+        assertEquals(
             ScreenAction.Type(2, "pizza", true),
             LlmJson.screenAction("""{"action":"type","node":2,"text":"pizza","submit":true,"say":null}""")
         )
@@ -201,6 +213,20 @@ class LlmJsonTest {
             ScreenAction.Ask("Small or large?"),
             LlmJson.screenAction("""{"action":"ask_user","node":null,"text":null,"submit":false,"say":"Small or large?"}""")
         )
+        assertEquals(
+            ScreenAction.PauseForUser("Please enter your password."),
+            LlmJson.screenAction("""{"action":"pause_for_user","node":null,"text":null,"submit":false,"say":"Please enter your password."}""")
+        )
+    }
+
+    @Test
+    fun screenInputPlacesAppHintsBeforeHistoryForPrefixCaching() {
+        val day = StayDate(2026, 11, 4)
+        val hints = "Popup dismiss buttons seen here: \"Skip\""
+        val step1 = LlmJson.screenInput(day, "g", listOf("Tapped [0]."), "screen1", hints)
+        val step2 = LlmJson.screenInput(day, "g", listOf("Tapped [0].", "Tapped [1]."), "screen2", hints)
+        assertTrue(step1.contains("App hints:\n$hints"))
+        assertTrue(step2.startsWith(step1.substringBefore("\n\nCurrent screen:")))
     }
 
     @Test

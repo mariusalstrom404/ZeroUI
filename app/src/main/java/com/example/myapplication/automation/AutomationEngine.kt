@@ -351,6 +351,20 @@ class AutomationEngine(private val service: AccessibilityService) {
     /** Taps [node] (via its clickable ancestor when it has a safe one). */
     suspend fun click(node: AccessibilityNodeInfo): Boolean = performClick(node, finder.clickTarget(node))
 
+    /** Long-presses [node] via ACTION_LONG_CLICK, falling back to a 600ms press gesture. */
+    suspend fun longClick(node: AccessibilityNodeInfo): Boolean {
+        val target = if (node.isLongClickable) node else finder.clickTarget(node)?.takeIf { it.isLongClickable }
+        if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
+            return true
+        }
+        val point = finder.visibleCenter(node) ?: return false
+        val path = Path().apply { moveTo(point.x.toFloat(), point.y.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 600))
+            .build()
+        return dispatch(gesture)
+    }
+
     /** With [settle] false the caller waits for the screen itself (the screen agent does). */
     suspend fun back(settle: Boolean = true) {
         service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
@@ -718,10 +732,49 @@ class AutomationEngine(private val service: AccessibilityService) {
         // Lists only offer the action while they can still move that way.
         if (container.actionList.none { it.id == action }) return false
         if (container.performAction(action)) {
-            if (settle) delay(800)
+            if (settle) awaitScreenChangeOrDelay(600)
             return true
         }
         return dispatchScrollGesture(down, finder.boundsOf(container), settle)
+    }
+
+    /**
+     * Scrolls horizontally (for carousels, category strips, or horizontal pagers).
+     * With [left] true, swipes finger right-to-left to reveal content to the right.
+     */
+    suspend fun scrollHorizontal(
+        left: Boolean,
+        container: AccessibilityNodeInfo? = null,
+        packageName: String? = targetPackage,
+        settle: Boolean = true
+    ): Boolean {
+        val target = container ?: finder.roots(packageName).firstOrNull() ?: return false
+        if (container != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val actionId = if (left) {
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id
+            } else {
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id
+            }
+            if (container.actionList.any { it.id == actionId } && container.performAction(actionId)) {
+                if (settle) awaitScreenChangeOrDelay(500)
+                return true
+            }
+        }
+        val area = finder.boundsOf(target)
+        if (area.isEmpty) return false
+        val y = area.centerY().toFloat()
+        val startX = area.left + area.width() * (if (left) 0.8f else 0.2f)
+        val endX = area.left + area.width() * (if (left) 0.2f else 0.8f)
+        val path = Path().apply {
+            moveTo(startX, y)
+            lineTo(endX, y)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 380))
+            .build()
+        val dispatched = dispatch(gesture)
+        if (dispatched && settle) awaitScreenChangeOrDelay(500)
+        return dispatched
     }
 
     private suspend fun dispatchScrollGesture(down: Boolean, area: Rect, settle: Boolean = true): Boolean {

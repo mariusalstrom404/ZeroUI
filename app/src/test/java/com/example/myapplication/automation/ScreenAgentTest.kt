@@ -18,8 +18,11 @@ class ScreenAgentTest {
 
         override suspend fun read(previous: Screen?) = screens[index]
         override suspend fun tap(id: Int): Boolean { log += "tap $id"; advance(); return true }
+        override suspend fun longPress(id: Int): Boolean { log += "long_press $id"; advance(); return true }
         override suspend fun type(id: Int, text: String, submit: Boolean): Boolean { log += "type $id $text"; advance(); return true }
         override suspend fun scroll(down: Boolean): Boolean { log += "scroll"; advance(); return true }
+        override suspend fun scroll(down: Boolean, nodeId: Int?): Boolean { log += "scroll ${if (down) "down" else "up"} ${nodeId ?: "main"}"; advance(); return true }
+        override suspend fun scrollHorizontal(left: Boolean, nodeId: Int?): Boolean { log += "scroll_${if (left) "left" else "right"} ${nodeId ?: "main"}"; advance(); return true }
         override suspend fun back() { log += "back"; advance() }
         override suspend fun pause() { log += "pause"; advance() }
     }
@@ -225,5 +228,162 @@ class ScreenAgentTest {
         ).describe()
         assertTrue(text, text.contains("[0] tap disabled \"Add\""))
         assertTrue(text, text.contains("[1] type password id=pin_box"))
+    }
+
+    @Test
+    fun describeIncludesRichStateOverlayRegionAndScrollHints() {
+        val rich = Screen(
+            app = "com.example.shop",
+            nodes = listOf(
+                ScreenNode(0, null, tappable = true, region = "top-right", viewId = "btn_close"),
+                ScreenNode(1, "Dark mode", tappable = true, checked = false, role = "switch"),
+                ScreenNode(2, "Pizza", tappable = true, selected = true, role = "tab", region = "bottom-bar"),
+                ScreenNode(3, "Sushi", editable = true, hint = "Search food"),
+                ScreenNode(4, null, scrollable = true, scrollDirs = listOf("left", "right"))
+            ),
+            isPopupOverlay = true,
+            scrollSummary = "at_bottom, can_scroll_up"
+        )
+        val text = rich.describe()
+        assertTrue(text, text.contains("Overlay: dialog/popup"))
+        assertTrue(text, text.contains("Scroll: at_bottom, can_scroll_up"))
+        assertTrue(text, text.contains("[0] tap top-right id=btn_close"))
+        assertTrue(text, text.contains("[1] tap switch checked=off \"Dark mode\""))
+        assertTrue(text, text.contains("[2] tap tab selected bottom-bar \"Pizza\""))
+        assertTrue(text, text.contains("[3] type \"Sushi\" hint=\"Search food\""))
+        assertTrue(text, text.contains("[4] scroll dirs=left,right"))
+    }
+
+    @Test
+    fun togglingSwitchChangesFingerprint() {
+        val before = screen(ScreenNode(0, "Dark mode", tappable = true, checked = false, role = "switch"))
+        val after = screen(ScreenNode(0, "Dark mode", tappable = true, checked = true, role = "switch"))
+        assertTrue(before.fingerprint != after.fingerprint)
+    }
+
+    @Test
+    fun detectsAndBreaksPageLoops() {
+        val pageA = screen(button(0, "Details"))
+        val pageB = screen(button(0, "Back"))
+        val device = FakeDevice(pageA, pageB, pageA, pageB, pageA, pageB, pageA, pageB)
+        val llm = ScriptedLlm(
+            ScreenAction.Tap(0),
+            ScreenAction.Back,
+            ScreenAction.Tap(0),
+            ScreenAction.Back,
+            ScreenAction.Tap(0),
+            ScreenAction.Back,
+            ScreenAction.Tap(0)
+        )
+        val outcome = run(device, llm)
+        assertTrue(outcome is ScreenAgent.Outcome.GaveUp)
+        // When returning to pageA the second time, history includes the loop warning.
+        assertTrue(llm.histories.any { h -> h.any { it.contains("already visited") } })
+    }
+
+    @Test
+    fun supportsLongPressHorizontalAndTargetedScroll() {
+        val s0 = screen(button(0, "Item"), ScreenNode(1, null, scrollable = true))
+        val device = FakeDevice(s0, screen(button(0, "Menu")), screen(button(0, "Cat 2")), screen(button(0, "More")))
+        val llm = ScriptedLlm(
+            ScreenAction.LongPress(0),
+            ScreenAction.ScrollLeft(1),
+            ScreenAction.ScrollDown(1),
+            ScreenAction.Done("ok")
+        )
+        assertEquals(ScreenAgent.Outcome.Done("ok"), run(device, llm))
+        assertEquals(listOf("long_press 0", "scroll_left 1", "scroll down 1"), device.log)
+    }
+
+    @Test
+    fun plannedStepMatchesByUniqueViewIdWhenLabelChanges() {
+        val first = screen(button(0, "Add"), ScreenNode(1, "Cart (1)", viewId = "cart_btn", tappable = true))
+        val second = screen(button(0, "Added"), ScreenNode(2, "Cart (2)", viewId = "cart_btn", tappable = true))
+        val third = screen(button(0, "Your cart"))
+        val device = FakeDevice(first, second, third)
+        val llm = ScriptedLlm(listOf(
+            ScreenTurn(ScreenAction.Tap(0), listOf(ScreenAction.Tap(1))),
+            ScreenTurn(ScreenAction.Done("ok"))
+        ))
+        assertEquals(ScreenAgent.Outcome.Done("ok"), run(device, llm))
+        assertEquals(listOf("tap 0", "tap 2"), device.log)
+        assertEquals(2, llm.screens.size)
+    }
+
+    @Test
+    fun pauseForUserPreservesHistoryAndCanResume() {
+        val loginScreen = Screen("com.example.bank", listOf(button(0, "Sign in")))
+        val homeScreen = Screen("com.example.bank", listOf(button(0, "Settings")))
+        val doneScreen = Screen("com.example.bank", listOf(button(0, "Dark mode")))
+
+        val firstAgent = ScreenAgent(
+            device = FakeDevice(loginScreen),
+            llm = ScriptedLlm(ScreenAction.PauseForUser("Please sign in on screen.")),
+            user = neverAsked
+        )
+        val paused = runBlocking { firstAgent.run("Enable dark mode") }
+        assertEquals(ScreenAgent.Outcome.PausedForUser("Please sign in on screen."), paused)
+        assertEquals("com.example.bank", firstAgent.lastApp)
+        assertTrue(firstAgent.lastHistory.any { it.contains("Paused for user") })
+
+        val resumeLlm = ScriptedLlm(ScreenAction.Tap(0), ScreenAction.Done("Dark mode opened"))
+        val resumeDevice = FakeDevice(homeScreen, doneScreen)
+        val resumedAgent = ScreenAgent(resumeDevice, resumeLlm, neverAsked)
+        val outcome = runBlocking {
+            resumedAgent.run("Enable dark mode", firstAgent.lastHistory + "User finished signing in.")
+        }
+        assertEquals(ScreenAgent.Outcome.Done("Dark mode opened"), outcome)
+        assertTrue(resumeLlm.histories.first().any { it.contains("User finished signing in.") })
+        assertEquals(listOf("tap 0"), resumeDevice.log)
+    }
+
+    @Test
+    fun learnsSafeNavigationHintsAndInjectsStoredHints() {
+        val memory = AppMemoryStore()
+        val popup = Screen("com.example.food", listOf(button(0, "Skip")), isPopupOverlay = true)
+        val home = Screen("com.example.food", listOf(button(0, "Search food")))
+        val searchBox = Screen("com.example.food", listOf(ScreenNode(0, "Search", editable = true)))
+        val options = Screen("com.example.food", listOf(button(0, "Large"), button(1, "Small")))
+
+        val firstRun = ScreenAgent(
+            device = FakeDevice(popup, home, searchBox, options),
+            llm = ScriptedLlm(
+                ScreenAction.Tap(0),
+                ScreenAction.Tap(0),
+                ScreenAction.Type(0, "secret query 12345", true),
+                ScreenAction.Ask("Which size?", listOf("Large", "Small")),
+                ScreenAction.Done("All set")
+            ),
+            user = answers("Large"),
+            hintsProvider = { memory.hintsFor(it) },
+            onLearned = { pkg, learning -> memory.record(pkg, learning) }
+        )
+        assertEquals(ScreenAgent.Outcome.Done("All set"), runBlocking { firstRun.run("Order food") })
+
+        val entry = memory.entryFor("com.example.food")!!
+        assertEquals(listOf("Skip"), entry.dismissLabels)
+        assertEquals(listOf("Search food"), entry.searchEntries)
+        assertTrue(entry.playbooks.single().contains("Type <input>"))
+        assertTrue(!entry.playbooks.single().contains("secret query"))
+
+        // Second run receives the learned hints via the 4-arg nextScreenAction overload.
+        var receivedHints: String? = null
+        val hintingLlm = object : ScreenLlm {
+            override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String) =
+                ScreenTurn(ScreenAction.Done("ok"))
+            override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String, appHints: String?): ScreenTurn {
+                receivedHints = appHints
+                return ScreenTurn(ScreenAction.Done("ok"))
+            }
+        }
+        val secondRun = ScreenAgent(
+            device = FakeDevice(home),
+            llm = hintingLlm,
+            user = neverAsked,
+            hintsProvider = { memory.hintsFor(it) }
+        )
+        assertEquals(ScreenAgent.Outcome.Done("ok"), runBlocking { secondRun.run("Order again") })
+        assertTrue(receivedHints.orEmpty().contains("Skip"))
+        assertTrue(receivedHints.orEmpty().contains("Search food"))
     }
 }

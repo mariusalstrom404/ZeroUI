@@ -30,6 +30,8 @@
     <string name="heard_listening">Listening…</string>
     <string name="banner_awaiting_title">Waiting for your answer</string>
     <string name="banner_awaiting_subtitle">Your next message will answer the active task</string>
+    <string name="banner_paused_title">Task paused for your input on screen</string>
+    <string name="action_resume_task">Resume</string>
     <string name="action_cancel_task">Cancel task</string>
     <string name="action_retry">Retry</string>
     <string name="action_confirm">Confirm</string>
@@ -91,6 +93,7 @@
     <string name="history_status_success">Done</string>
     <string name="history_status_failed">Failed</string>
     <string name="history_status_cancelled">Stopped</string>
+    <string name="history_status_paused">Paused</string>
     <string name="history_status_needs_input">Needs input</string>
 
     <!-- Settings Sheet -->
@@ -115,6 +118,10 @@
     <string name="settings_llm_configured">API key configured</string>
     <string name="settings_llm_missing">API key not configured</string>
     <string name="settings_clear_chat">Clear chat conversation</string>
+    <string name="settings_app_memory">App exploration memory</string>
+    <string name="settings_app_memory_desc">Remember popup buttons &amp; navigation paths locally (never stores passwords or typed text)</string>
+    <string name="settings_clear_memory">Clear learned app memory (%1$d apps)</string>
+    <string name="settings_memory_cleared">Learned app memory cleared</string>
     <string name="settings_privacy_note">Spoken text and visible screen labels (never screenshots or passwords) are sent to OpenAI only when needed to understand or execute a task.</string>
     <string name="floating_hidden_toast">Floating mic hidden. Re-enable anytime in ZeroUI Settings.</string>
 </resources>

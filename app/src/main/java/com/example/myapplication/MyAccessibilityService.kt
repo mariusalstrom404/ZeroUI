@@ -23,6 +23,7 @@ import android.widget.Toast
 import com.example.myapplication.automation.AccessibilityScreenDevice
 import com.example.myapplication.automation.ActionGuard
 import com.example.myapplication.automation.AgentUser
+import com.example.myapplication.automation.AppMemory
 import com.example.myapplication.automation.AutomationEngine
 import com.example.myapplication.automation.ScreenAgent
 import com.example.myapplication.automation.BookingAutomation
@@ -90,10 +91,21 @@ class MyAccessibilityService : AccessibilityService() {
     private var pillListening = false
     private var followUpJob: Job? = null
 
-    /** How the command currently being processed ended; set by [fail] and [ask]. */
-    private enum class Outcome { OK, NEEDS_INPUT, FAILED }
+    /** How the command currently being processed ended; set by [fail], [ask], and [pauseTask]. */
+    private enum class Outcome { OK, NEEDS_INPUT, PAUSED, FAILED }
     private var outcome = Outcome.OK
     private var lastReply: String? = null
+    private var pausedDetail: String? = null
+
+    private data class PausedTask(
+        val goal: String,
+        val appPackage: String?,
+        val history: List<String>,
+        val reason: String,
+        val createdAt: Long = System.currentTimeMillis()
+    )
+
+    @Volatile private var pausedTask: PausedTask? = null
 
     object DebugConfig {
         /**
@@ -130,6 +142,10 @@ class MyAccessibilityService : AccessibilityService() {
         /** How long a launched app gets to come to the front before the agent starts anyway. */
         private const val APP_START_TIMEOUT_MS = 5000L
         private const val ANSWER_TIMEOUT_MS = 60000L
+        private const val PAUSED_TASK_TTL_MS = 10 * 60 * 1000L
+        private const val RESUME_HISTORY_NOTE =
+            "The user completed the manual step on screen and asked you to continue the goal from the current screen."
+        private val RESUME_CHOICES = listOf("Resume", "Cancel")
 
         private val UUID_PATTERN =Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
     }
@@ -162,6 +178,7 @@ class MyAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         UserPreferences.init(this)
+        AppMemory.init(this)
         CommandBridge.attachService(this)
         Speaker.init(this)
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -175,8 +192,10 @@ class MyAccessibilityService : AccessibilityService() {
         ).also { it.show() }
         statusIndicator = StatusIndicator(this, windowManager).apply {
             onStop = { stopCurrentCommand() }
+            onResume = { resumePausedTask() }
             onMic = { onPillMic() }
             onDismiss = {
+                clearPausedTask(hidePill = false)
                 cancelFollowUp()
                 hide()
             }
@@ -227,8 +246,33 @@ class MyAccessibilityService : AccessibilityService() {
     /** Entry point invoked by [CommandBridge] with commands the UI has understood and confirmed. */
     fun submitCommands(commands: List<AppIntent>, utterance: String = "") {
         Log.d("NLPControl", "Service starting chain of ${commands.size}")
+        clearPausedTask(hidePill = false)
         currentJob?.cancel()
         currentJob = serviceScope.launch { executeCommandChain(commands, utterance) }
+    }
+
+    /** Resumes a paused [ScreenAgent] task from the current screen after the user finished their manual step. */
+    fun resumePausedTask(): Boolean {
+        val task = pausedTask ?: return false
+        if (System.currentTimeMillis() - task.createdAt > PAUSED_TASK_TTL_MS) {
+            clearPausedTask()
+            return false
+        }
+        clearPausedTask(hidePill = false)
+        currentJob?.cancel()
+        currentJob = serviceScope.launch { executeResumedTask(task) }
+        return true
+    }
+
+    /** Discards any paused task and optionally hides the paused status pill. */
+    fun clearPausedTask(hidePill: Boolean = true) {
+        if (pausedTask != null) {
+            pausedTask = null
+            CommandBridge.postPausedTask(null)
+        }
+        if (hidePill && statusIndicator?.currentPhase == Phase.PAUSED) {
+            statusIndicator?.hide()
+        }
     }
 
     fun showUnderstanding(utterance: String) {
@@ -263,6 +307,7 @@ class MyAccessibilityService : AccessibilityService() {
     /** The stop button on the indicator or in the chat: cancels the running command wherever it is. */
     fun stopCurrentCommand() {
         understanding = false
+        clearPausedTask(hidePill = false)
         refreshFloatingButton()
         val stoppedRequest = CommandBridge.postStop()
         val job = currentJob?.takeIf { it.isActive }
@@ -279,12 +324,72 @@ class MyAccessibilityService : AccessibilityService() {
         sendReply("Okay, I stopped.")
     }
 
+    private suspend fun executeResumedTask(task: PausedTask) {
+        CommandBridge.postStatus(CommandBridge.Status.STARTED)
+        cancelFollowUp()
+        understanding = false
+        runningChains++
+        activeUtterance = "Resume: ${task.goal}"
+        activeDescription = "Resuming: ${task.goal}"
+        refreshFloatingButton()
+        var listenAfter = false
+        var paused: String? = null
+        var failure: String? = null
+        var question: String? = null
+        try {
+            outcome = Outcome.OK
+            lastReply = null
+            pausedDetail = null
+            statusIndicator?.show(Phase.WORKING, "Resuming task", task.goal)
+            val (agentOutcome, agent) = runAgentWithState(task.goal, task.history + RESUME_HISTORY_NOTE)
+            reportAgent(agentOutcome, task.goal, agent)
+            when (outcome) {
+                Outcome.FAILED -> failure = lastReply
+                Outcome.NEEDS_INPUT -> question = lastReply
+                Outcome.PAUSED -> paused = pausedDetail ?: lastReply
+                Outcome.OK -> {}
+            }
+            val historyStatus = when {
+                failure != null -> "FAILED"
+                paused != null -> "PAUSED"
+                question != null -> "NEEDS_INPUT"
+                else -> "SUCCESS"
+            }
+            OperationHistoryManager.addRecord(this, activeUtterance, activeDescription, historyStatus)
+            CommandBridge.notifyHistoryChanged()
+            when {
+                failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
+                paused != null -> statusIndicator?.show(Phase.PAUSED, "Paused for you", paused)
+                question != null -> statusIndicator?.show(Phase.NEEDS_INPUT, "Need more information", question)
+                else -> {
+                    statusIndicator?.show(Phase.SUCCESS, "Done", lastReply)
+                    if (lastReply == null) Speaker.speak("Done.", interrupt = false)
+                }
+            }
+            listenAfter = paused == null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("NLPControl", "Resumed task failed", e)
+            fail("Sorry, something went wrong while resuming.")
+            statusIndicator?.show(Phase.ERROR, "Something went wrong", lastReply)
+        } finally {
+            runningChains--
+            activeUtterance = ""
+            activeDescription = ""
+            refreshFloatingButton()
+            CommandBridge.postStatus(CommandBridge.Status.FINISHED)
+        }
+        if (listenAfter) CommandBridge.listenForMore(question)
+    }
+
     private suspend fun executeCommandChain(commands: List<AppIntent>, utterance: String) {
         CommandBridge.postStatus(CommandBridge.Status.STARTED)
         cancelFollowUp()
         val chainStart = Timing.now()
         var listenAfter = false
         var question: String? = null
+        var paused: String? = null
         understanding = false
         runningChains++
         activeUtterance = utterance
@@ -299,6 +404,7 @@ class MyAccessibilityService : AccessibilityService() {
                 when (outcome) {
                     Outcome.FAILED -> failure = lastReply
                     Outcome.NEEDS_INPUT -> question = lastReply
+                    Outcome.PAUSED -> paused = pausedDetail ?: lastReply
                     Outcome.OK -> {}
                 }
                 // Later commands may depend on this one, so they don't run on top of a failure.
@@ -321,6 +427,7 @@ class MyAccessibilityService : AccessibilityService() {
 
             val historyStatus = when {
                 failure != null -> "FAILED"
+                paused != null -> "PAUSED"
                 question != null -> "NEEDS_INPUT"
                 else -> "SUCCESS"
             }
@@ -329,6 +436,7 @@ class MyAccessibilityService : AccessibilityService() {
 
             when {
                 failure != null -> statusIndicator?.show(Phase.ERROR, "Something went wrong", failure)
+                paused != null -> statusIndicator?.show(Phase.PAUSED, "Paused for you", paused)
                 question != null -> statusIndicator?.show(Phase.NEEDS_INPUT, "Need more information", question)
                 else -> {
                     statusIndicator?.show(Phase.SUCCESS, "Done", lastReply)
@@ -336,7 +444,7 @@ class MyAccessibilityService : AccessibilityService() {
                     if (lastReply == null) Speaker.speak("Done.", interrupt = false)
                 }
             }
-            listenAfter = listensAfter(commands.last())
+            listenAfter = paused == null && listensAfter(commands.last())
         } finally {
             Timing.log("Command chain of ${commands.size}: ${Timing.now() - chainStart} ms")
             runningChains--
@@ -460,6 +568,7 @@ class MyAccessibilityService : AccessibilityService() {
         Log.d("NLPControl", "Processing: $intent")
         outcome = Outcome.OK
         lastReply = null
+        pausedDetail = null
         statusIndicator?.show(Phase.WORKING, describe(intent), progress, stepProgress = stepProgress)
         try {
             Timing.measure("Command ${intent::class.simpleName}") { dispatch(intent) }
@@ -1059,7 +1168,18 @@ class MyAccessibilityService : AccessibilityService() {
                                 else -> "Typed $text."
                             }
                         )
-                    else -> fail("I couldn't find a search bar to type “$text” into.")
+                    else -> {
+                        // Scripted search bar lookup failed: let the screen agent explore and locate it.
+                        val goal = if (intent.submit) "Search for \"$text\" in this app and submit." else "Type \"$text\" into the appropriate text field."
+                        statusIndicator?.show(Phase.WORKING, "Exploring screen", goal)
+                        val (outcome, agent) = runAgentWithState(goal)
+                        when (outcome) {
+                            is ScreenAgent.Outcome.Done -> sendReply(outcome.summary ?: if (intent.submit) "Searching for $text." else "Typed $text.")
+                            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp ->
+                                fail("I couldn't find a search bar to type “$text” into.")
+                            else -> reportAgent(outcome, goal, agent)
+                        }
+                    }
                 }
             }
 
@@ -1067,10 +1187,21 @@ class MyAccessibilityService : AccessibilityService() {
             is AppIntent.ClickText -> {
                 // Long enough for a screen that's still loading, and a few scrolls for a label below the fold.
                 val node = automationEngine.waitForElement(
-                    Selector(text = intent.text), timeoutMs = 6000, scrollIfNotFound = true, packageName = null, maxScrolls = 3
+                    Selector(text = intent.text), timeoutMs = 4500, scrollIfNotFound = true, packageName = null, maxScrolls = 3
                 )
                 when {
-                    node == null -> fail("I couldn't find “${intent.text}” on screen.")
+                    node == null -> {
+                        // Label wasn't found directly; ask the screen agent to locate icon/synonym match.
+                        val goal = "Tap on “${intent.text}” on screen, then stop."
+                        statusIndicator?.show(Phase.WORKING, "Looking smarter", "Finding “${intent.text}”")
+                        val (outcome, agent) = runAgentWithState(goal)
+                        when (outcome) {
+                            is ScreenAgent.Outcome.Done -> sendReply(outcome.summary ?: "Clicked on ${intent.text}.")
+                            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp ->
+                                fail("I couldn't find “${intent.text}” on screen.")
+                            else -> reportAgent(outcome, goal, agent)
+                        }
+                    }
                     // The user named the button, so other taps are fine, but ZeroUI never pays.
                     ActionGuard.forTap(automationEngine.finder.tapLabels(node)) == ActionGuard.Verdict.BLOCK ->
                         sendReply("That looks like a payment step, so I left it for you to tap yourself.", kind = MessageKind.HANDOVER)
@@ -1087,7 +1218,8 @@ class MyAccessibilityService : AccessibilityService() {
                 } else {
                     // As long as the app takes to come up, not a fixed time; the agent's first read waits for it to settle.
                     if (pkg != null) automationEngine.waitForApp(pkg, APP_START_TIMEOUT_MS)
-                    reportAgent(runAgent(intent.goal))
+                    val (outcome, agent) = runAgentWithState(intent.goal)
+                    reportAgent(outcome, intent.goal, agent)
                 }
             }
 
@@ -1123,17 +1255,25 @@ class MyAccessibilityService : AccessibilityService() {
             false -> "Turn ${setting.label} off."
             null -> "Switch ${setting.label} to the other state."
         }
-        reportAgent(runAgent("$change Change only this one setting, then stop."))
+        val goal = "$change Change only this one setting, then stop."
+        val (outcome, agent) = runAgentWithState(goal)
+        reportAgent(outcome, goal, agent)
     }
 
-    private suspend fun runAgent(goal: String): ScreenAgent.Outcome =
+    private suspend fun runAgentWithState(
+        goal: String,
+        initialHistory: List<String> = emptyList()
+    ): Pair<ScreenAgent.Outcome, ScreenAgent> =
         Timing.measure("Screen agent run") {
-            ScreenAgent(
-                AccessibilityScreenDevice(automationEngine),
-                llmClient,
-                AgentUser { question, choices -> askByVoice(question, choices) },
-                onProgress = { automationEngine.report(it) }
-            ).run(goal)
+            val agent = ScreenAgent(
+                device = AccessibilityScreenDevice(automationEngine),
+                llm = llmClient,
+                user = AgentUser { question, choices -> askByVoice(question, choices) },
+                onProgress = { automationEngine.report(it) },
+                hintsProvider = { pkg -> AppMemory.hintsFor(pkg, UserPreferences.appMemoryEnabled.value) },
+                onLearned = { pkg, learning -> AppMemory.record(pkg, learning, UserPreferences.appMemoryEnabled.value) }
+            )
+            agent.run(goal, initialHistory) to agent
         }
 
     /** The script couldn't finish an order: the agent carries on from whatever is on screen. */
@@ -1141,7 +1281,8 @@ class MyAccessibilityService : AccessibilityService() {
         statusIndicator?.show(Phase.WORKING, "Trying another way", "${intent.item} from $restaurant")
         val goal = "In ${intent.app}, add ${intent.item} from $restaurant to the cart. " +
             "If it has required choices, ask me which ones I want. Stop once it's in the cart."
-        when (val outcome = runAgent(goal)) {
+        val (outcome, agent) = runAgentWithState(goal)
+        when (outcome) {
             is ScreenAgent.Outcome.Done ->
                 sendReply("${outcome.summary ?: "I added it."} Please review your cart and check out yourself.")
             // The script's own message says more than "the language service is unreachable" here.
@@ -1154,18 +1295,41 @@ class MyAccessibilityService : AccessibilityService() {
                     FoodDeliveryAutomation.Result.ITEM_NOT_FOUND -> fail("I opened $restaurant but couldn't find ${intent.item} on the menu.")
                     else -> fail("I found ${intent.item} but couldn't find the Add to cart button.")
                 }
-            else -> reportAgent(outcome)
+            else -> reportAgent(outcome, goal, agent)
         }
     }
 
-    private fun reportAgent(outcome: ScreenAgent.Outcome) {
+    private fun pauseTask(goal: String, agent: ScreenAgent, reason: String) {
+        pausedTask = PausedTask(
+            goal = goal,
+            appPackage = agent.lastApp,
+            history = agent.lastHistory,
+            reason = reason
+        )
+        pausedDetail = reason
+        outcome = Outcome.PAUSED
+        CommandBridge.postPausedTask(reason)
+    }
+
+    private fun reportAgent(outcome: ScreenAgent.Outcome, goal: String, agent: ScreenAgent) {
         when (outcome) {
             is ScreenAgent.Outcome.Done -> sendReply(outcome.summary ?: "Done.")
-            is ScreenAgent.Outcome.HandedOver ->
+            is ScreenAgent.Outcome.PausedForUser -> {
+                pauseTask(goal, agent, outcome.instruction)
                 sendReply(
-                    "I stopped at “${outcome.what}”. I don't pay or enter private details, so nothing has been submitted; please finish this step yourself.",
+                    "${outcome.instruction} Tap Resume (▶) or say “continue” when you're ready.",
+                    choices = RESUME_CHOICES,
                     kind = MessageKind.HANDOVER
                 )
+            }
+            is ScreenAgent.Outcome.HandedOver -> {
+                pauseTask(goal, agent, "Paused at ${outcome.what}")
+                sendReply(
+                    "I paused at “${outcome.what}”. I don't pay or enter private details, so please complete this step yourself — tap Resume (▶) or say “continue” if you want me to carry on afterwards.",
+                    choices = RESUME_CHOICES,
+                    kind = MessageKind.HANDOVER
+                )
+            }
             ScreenAgent.Outcome.Declined -> sendReply("Okay, I stopped there.")
             ScreenAgent.Outcome.NoAnswer -> ask("I didn't get an answer, so I stopped there.")
             is ScreenAgent.Outcome.GaveUp -> fail("I couldn't finish that${outcome.reason?.let { ": $it" } ?: "."}")
@@ -1215,7 +1379,18 @@ class MyAccessibilityService : AccessibilityService() {
                 val top = result.topResult?.let { " The first result is $it." } ?: ""
                 sendReply("$found in $where$who.$top${warnings(wanted, result.datesApplied, guests, result.guestsApplied)}")
             }
-            else -> bookingFailure(result, destination)
+            else -> recoverBookingSearch(destination, details, result)
+        }
+    }
+
+    private suspend fun recoverBookingSearch(destination: String, details: String, result: BookingAutomation.Result) {
+        statusIndicator?.show(Phase.WORKING, "Trying another way", "Booking.com: $destination")
+        val goal = "In Booking.com, search for stays in $destination${if (details.isNotEmpty()) " ($details)" else ""} and show the search results. Stop once results are visible."
+        val (outcome, agent) = runAgentWithState(goal)
+        when (outcome) {
+            is ScreenAgent.Outcome.Done -> sendReply(outcome.summary ?: "Here are the stays in $destination.")
+            ScreenAgent.Outcome.Unavailable, is ScreenAgent.Outcome.GaveUp -> bookingFailure(result, destination)
+            else -> reportAgent(outcome, goal, agent)
         }
     }
 
@@ -1328,12 +1503,16 @@ class MyAccessibilityService : AccessibilityService() {
         CommandBridge.postReply(text, kind = MessageKind.PROGRESS)
     }
 
-    private fun sendReply(text: String, kind: MessageKind = MessageKind.NORMAL) {
+    private fun sendReply(
+        text: String,
+        choices: List<String> = emptyList(),
+        kind: MessageKind = MessageKind.NORMAL
+    ) {
         Log.d("NLPControl", "Sending reply: $text")
         lastReply = text
         // Spoken here rather than by the UI so errors and questions are heard while another app is in front.
         Speaker.speak(text, interrupt = false)
-        CommandBridge.postReply(text, kind = kind)
+        CommandBridge.postReply(text, choices = choices, kind = kind)
     }
 
     /** Replies and marks the current command as failed (shown as an error on the indicator). */

@@ -32,6 +32,26 @@ object ActionGuard {
             "|傳送|發送|发送|發布|发布|分享|刪除|删除|移除|安裝|安装|允許|允许|登出|訂閱|订阅|提交|轉帳|转账|確認|确认|預訂|预订",
         RegexOption.IGNORE_CASE
     )
+    /**
+     * Clearly reversible local UI confirmations (choosing dates, filters, location, or options)
+     * that shouldn't interrupt app exploration unless a payment/high-risk context is present.
+     */
+    private val SAFE_UI_CONFIRM = Regex(
+        "\\bconfirm\\s+(?:dates?|filter|filters|location|address|selection|choice|choices|guests?|rooms?|time|city|pickup|delivery)\\b" +
+            "|確認(?:日期|篩選|地點|地址|位置|選擇|選項|人數|房型|時間|城市|外送|自取)" +
+            "|确认(?:日期|筛选|地点|地址|位置|选择|选项|人数|房型|时间|城市)",
+        RegexOption.IGNORE_CASE
+    )
+    private val PICKER_CONTEXT = Regex(
+        "\\b(?:filter|sort by|select dates?|check-?in|check-?out|choose your|pick a|date picker|location|guests?)\\b" +
+            "|篩選|排序|選擇日期|入住|退房|選擇地點|選擇地址|人數",
+        RegexOption.IGNORE_CASE
+    )
+    private val HIGH_RISK_CONTEXT = Regex(
+        "\\b(?:delete|remove|transfer|payment|checkout|order summary|total|sign out|log ?out|compose|new message|new post|permission)\\b" +
+            "|刪除|轉帳|付款|結帳|總金額|登出|權限|發文|傳送訊息",
+        RegexOption.IGNORE_CASE
+    )
     private val PAYMENT_SCREEN = Regex(
         "\\b(?:card number|cvv|cvc|expiry date|payment method)\\b|卡號|卡号|付款方式|支付方式",
         RegexOption.IGNORE_CASE
@@ -44,14 +64,28 @@ object ActionGuard {
     )
     private val SEARCH = Regex("\\bsearch\\b|搜尋|搜索|搜寻", RegexOption.IGNORE_CASE)
 
-    /** How to treat a tap on an element with these [labels]. */
-    fun forTap(labels: List<String>): Verdict {
+    /** How to treat a tap on an element with these [labels], optionally considering [screenLabels]. */
+    fun forTap(labels: List<String>, screenLabels: List<String> = emptyList()): Verdict {
         val short = labels.filter { it.length <= MAX_LABEL_LENGTH }
-        return when {
-            short.any { SPENDS_MONEY.containsMatchIn(it) } -> Verdict.BLOCK
-            short.any { NEEDS_YES.containsMatchIn(it) } -> Verdict.CONFIRM
-            else -> Verdict.ALLOW
+        if (short.any { SPENDS_MONEY.containsMatchIn(it) }) return Verdict.BLOCK
+        if (short.none { NEEDS_YES.containsMatchIn(it) }) return Verdict.ALLOW
+
+        // Clearly reversible picker/filter confirmations (e.g. "Confirm dates", "確認篩選") flow through.
+        val allSafeConfirm = short.filter { NEEDS_YES.containsMatchIn(it) }.all { SAFE_UI_CONFIRM.containsMatchIn(it) }
+        if (allSafeConfirm) return Verdict.ALLOW
+
+        // A bare "Confirm"/"確認" on an unmistakable filter/date-picker screen (with no high-risk cues) is safe.
+        if (screenLabels.isNotEmpty()) {
+            val bareConfirmOnly = short.filter { NEEDS_YES.containsMatchIn(it) }
+                .all { it.trim().matches(Regex("^(?:confirm|確認|确认)$", RegexOption.IGNORE_CASE)) }
+            if (bareConfirmOnly &&
+                screenLabels.any { PICKER_CONTEXT.containsMatchIn(it) } &&
+                screenLabels.none { HIGH_RISK_CONTEXT.containsMatchIn(it) }
+            ) {
+                return Verdict.ALLOW
+            }
         }
+        return Verdict.CONFIRM
     }
 
     /** The label that triggered a non-ALLOW verdict, for telling the user what was stopped. */

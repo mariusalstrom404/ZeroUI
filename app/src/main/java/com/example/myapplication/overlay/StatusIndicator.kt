@@ -42,6 +42,8 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         WORKING(0xFF60A5FA.toInt(), null),
         SUCCESS(0xFF34D399.toInt(), "✓"),
         NEEDS_INPUT(0xFFFBBF24.toInt(), "?"),
+        /** Handed over to the user for a manual step; stays visible with a Resume button. */
+        PAUSED(0xFFF59E0B.toInt(), "⏸"),
         ERROR(0xFFF87171.toInt(), "!"),
         STOPPED(0xFF94A3B8.toInt(), "■"),
         /** ZeroUI's mic is open for the user's next request. */
@@ -54,6 +56,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     }
 
     var onStop: (() -> Unit)? = null
+    var onResume: (() -> Unit)? = null
     var onMic: (() -> Unit)? = null
     var onDismiss: (() -> Unit)? = null
     var onOpenChat: (() -> Unit)? = null
@@ -83,6 +86,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
     private lateinit var stepChip: TextView
     private lateinit var detailView: TextView
     private lateinit var stopButton: FrameLayout
+    private lateinit var resumeButton: TextView
     private lateinit var micButton: ImageView
     private lateinit var closeButton: TextView
     private lateinit var stepProgressBar: ProgressBar
@@ -144,8 +148,10 @@ class StatusIndicator(private val context: Context, private val windowManager: W
         }
 
         val listening = phase == Phase.LISTENING
+        val paused = phase == Phase.PAUSED
         stopButton.visibility = if (phase.stoppable) View.VISIBLE else View.GONE
-        micButton.visibility = if (phase.stoppable) View.GONE else View.VISIBLE
+        resumeButton.visibility = if (paused) View.VISIBLE else View.GONE
+        micButton.visibility = if (phase.stoppable || paused) View.GONE else View.VISIBLE
         closeButton.visibility = if (phase.stoppable) View.GONE else View.VISIBLE
         (micButton.background as GradientDrawable).setColor(if (listening) 0xFFE53935.toInt() else 0x33FFFFFF)
         micButton.contentDescription = if (listening) "Stop listening" else "Speak to ZeroUI"
@@ -157,6 +163,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             Phase.ERROR -> ERROR_HIDE_MS
             Phase.STOPPED -> STOPPED_HIDE_MS
             Phase.READY -> READY_HIDE_MS
+            Phase.PAUSED -> null
             else -> null
         }
         hideAfter?.let { handler.postDelayed(hideRunnable, it) }
@@ -317,7 +324,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
                 MotionEvent.ACTION_UP -> {
                     if (dragging) {
                         prefs.edit().putInt("x", params.x).putInt("y", params.y).apply()
-                        phase?.let { if (!it.stoppable && it != Phase.LISTENING) handler.postDelayed(hideRunnable, READY_HIDE_MS) }
+                        phase?.let { if (!it.stoppable && it != Phase.LISTENING && it != Phase.PAUSED) handler.postDelayed(hideRunnable, READY_HIDE_MS) }
                     } else {
                         view.performClick()
                     }
@@ -424,6 +431,24 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             setOnClickListener { onStop?.invoke() }
         }
 
+        resumeButton = TextView(context).apply {
+            text = "▶"
+            gravity = Gravity.CENTER
+            setTextColor(0xFF0F172A.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.DEFAULT_BOLD
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFF34D399.toInt())
+            }
+            contentDescription = "Resume task"
+            isClickable = true
+            isFocusable = true
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginStart = dp(12) }
+            setOnClickListener { onResume?.invoke() }
+        }
+
         micButton = ImageView(context).apply {
             setImageResource(R.drawable.ic_mic)
             imageTintList = ColorStateList.valueOf(Color.WHITE)
@@ -457,6 +482,7 @@ class StatusIndicator(private val context: Context, private val windowManager: W
             addView(iconBox)
             addView(texts)
             addView(stopButton)
+            addView(resumeButton)
             addView(micButton)
             addView(closeButton)
         }

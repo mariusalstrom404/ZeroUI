@@ -301,3 +301,28 @@ object FollowUpRules {
 
     fun isLong(text: String): Boolean = text.trim().split(Regex("\\s+")).size > MAX_NAME_WORDS
 }
+
+/**
+ * Recognizes user replies when a [com.example.myapplication.automation.ScreenAgent] task is
+ * paused waiting for the user to finish a manual step (login, password, OTP, verification, etc.).
+ */
+object ResumeRules {
+    private val CANCEL = Regex(
+        "^(?:cancel|stop|never ?mind|forget it|abort|end(?: task)?|no thanks|don'?t continue)\\b|" +
+            "^(?:取消|算了|不用了|結束(?:任務)?|停止(?:任務)?|不要繼續)",
+        RegexOption.IGNORE_CASE
+    )
+    private val RESUME = Regex(
+        "^(?:resume|continue|keep going|go on|go ahead|proceed|i'?m done|done|finished|all set|ready)(?:\\b|[,.!\\s]|$)|" +
+            "^(?:繼續(?:任務|吧|執行)?|好了|完成了|弄好了|我好了|登入好了|輸入好了|驗證好了|可以繼續(?:了)?)",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun isCancel(input: String): Boolean = CANCEL.containsMatchIn(input.trim())
+
+    fun isResume(input: String): Boolean {
+        val t = input.trim()
+        if (t.isEmpty() || isCancel(t)) return false
+        return RESUME.containsMatchIn(t)
+    }
+}

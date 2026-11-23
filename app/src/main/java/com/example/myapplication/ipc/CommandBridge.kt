@@ -22,9 +22,11 @@ object CommandBridge {
     @Volatile private var statusListener: ((Status) -> Unit)? = null
     @Volatile private var stopListener: (() -> Boolean)? = null
     @Volatile private var awaitingListener: ((Boolean) -> Unit)? = null
+    @Volatile private var pausedTaskListener: ((String?) -> Unit)? = null
     @Volatile private var listenListener: (() -> Unit)? = null
     @Volatile private var historyListener: (() -> Unit)? = null
     @Volatile private var answer: CompletableDeferred<String>? = null
+    @Volatile private var pausedTaskSummary: String? = null
 
     val isServiceConnected: Boolean get() = service != null
 
@@ -35,6 +37,10 @@ object CommandBridge {
 
     /** A running automation asked the user something and is waiting for the reply. */
     val isAwaitingAnswer: Boolean get() = answer != null
+
+    /** Non-null when an agent task is paused for manual user action and can be resumed. */
+    val pausedTaskReason: String? get() = pausedTaskSummary
+    val hasPausedTask: Boolean get() = pausedTaskSummary != null
 
     /** Label or package of the app currently underneath ZeroUI, or null when unavailable. */
     fun foregroundAppName(): String? = service?.foregroundAppLabel()
@@ -58,6 +64,12 @@ object CommandBridge {
 
     /** Notifies the UI that [OperationHistoryManager] recorded a new entry. */
     fun notifyHistoryChanged() { historyListener?.invoke() }
+
+    /** Updates whether a task is paused waiting for the user to finish a manual step. */
+    fun postPausedTask(reason: String?) {
+        pausedTaskSummary = reason
+        pausedTaskListener?.invoke(reason)
+    }
 
     /** The user pressed stop. Returns true if the client had a request in progress to cancel. */
     fun postStop(): Boolean = stopListener?.invoke() ?: false
@@ -132,11 +144,21 @@ object CommandBridge {
         service?.applyOverlayPreferences(resetPosition)
     }
 
+    /** Resumes the paused [ScreenAgent] task from the current screen. Returns false if none is paused. */
+    fun resumePausedTask(): Boolean = service?.resumePausedTask() ?: false
+
+    /** Discards the paused task without resuming it. */
+    fun clearPausedTask() {
+        val s = service
+        if (s != null) s.clearPausedTask() else postPausedTask(null)
+    }
+
     fun setClient(
         onReply: (String, List<String>, MessageKind) -> Unit,
         onStatus: (Status) -> Unit,
         onStop: () -> Boolean,
         onAwaitingAnswer: (Boolean) -> Unit = {},
+        onPausedTaskChanged: (String?) -> Unit = {},
         onListen: () -> Unit = {},
         onHistoryChanged: () -> Unit = {}
     ) {
@@ -144,6 +166,7 @@ object CommandBridge {
         statusListener = onStatus
         stopListener = onStop
         awaitingListener = onAwaitingAnswer
+        pausedTaskListener = onPausedTaskChanged
         listenListener = onListen
         historyListener = onHistoryChanged
     }
@@ -153,6 +176,7 @@ object CommandBridge {
         statusListener = null
         stopListener = null
         awaitingListener = null
+        pausedTaskListener = null
         listenListener = null
         historyListener = null
     }

@@ -19,6 +19,7 @@ import androidx.lifecycle.ViewModelStoreOwner
 import com.example.myapplication.Message
 import com.example.myapplication.MessageKind
 import com.example.myapplication.assistant.WeatherService
+import com.example.myapplication.automation.AppMemory
 import com.example.myapplication.debug.Timing
 import com.example.myapplication.history.OperationHistoryManager
 import com.example.myapplication.history.OperationRecord
@@ -27,6 +28,7 @@ import com.example.myapplication.nlp.AppIntent
 import com.example.myapplication.nlp.CommandConversation
 import com.example.myapplication.nlp.ConversationClosing
 import com.example.myapplication.nlp.OpenAiLlmClient
+import com.example.myapplication.nlp.ResumeRules
 import com.example.myapplication.nlp.SystemAction
 import com.example.myapplication.speech.Speaker
 import kotlinx.coroutines.CoroutineScope
@@ -86,6 +88,10 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     var awaitingAnswer by mutableStateOf(CommandBridge.isAwaitingAnswer)
         private set
 
+    /** Non-null when an agent task is paused for manual user action (login/OTP/etc.) and can resume. */
+    var pausedTaskReason by mutableStateOf(CommandBridge.pausedTaskReason)
+        private set
+
     /**
      * Set by the host Activity to route assistant text to text-to-speech. With interrupt false it
      * waits for what is being said, so a turn's sentences are all heard.
@@ -107,6 +113,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         UserPreferences.init(app)
+        AppMemory.init(app)
         warmUp()
         loadHistory()
         refreshOperationHistory()
@@ -116,6 +123,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             onStatus = { status -> scope.launch { isProcessing = status == CommandBridge.Status.STARTED } },
             onStop = { stopRequest() },
             onAwaitingAnswer = { awaiting -> scope.launch { awaitingAnswer = awaiting } },
+            onPausedTaskChanged = { reason -> scope.launch { pausedTaskReason = reason } },
             onListen = { scope.launch { listenRequests++ } },
             onHistoryChanged = { scope.launch { refreshOperationHistory() } }
         )
@@ -191,7 +199,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
      * new conversation, unless something is still going on in this one.
      */
     fun onDialogShown() {
-        val busy = isProcessing || awaitingAnswer || conversation.isWaiting
+        val busy = isProcessing || awaitingAnswer || conversation.isWaiting || pausedTaskReason != null
         if (!busy && ChatSessions.worthKeeping(messages) &&
             ChatSessions.isIdle(messages.lastOrNull()?.time, System.currentTimeMillis())
         ) {
@@ -294,6 +302,20 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
             onAnswered()
             return
         }
+        // A screen-agent task is paused waiting for the user to finish a manual step on screen.
+        if (CommandBridge.hasPausedTask) {
+            when {
+                ResumeRules.isResume(userInput) -> {
+                    resumePausedTask()
+                    return
+                }
+                ResumeRules.isCancel(userInput) -> {
+                    cancelPausedTask()
+                    return
+                }
+                else -> CommandBridge.clearPausedTask()
+            }
+        }
         // "No thanks", "that's all": the user is done, so ZeroUI stops listening rather than asking the LLM.
         if (!conversation.isWaiting && ConversationClosing.isClosing(userInput)) {
             addAssistant("Okay. Tap the mic whenever you need me.")
@@ -330,6 +352,20 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     fun stop() {
         if (CommandBridge.isServiceConnected) CommandBridge.requestStop()
         else if (stopRequest()) addAssistant("Okay, I stopped.")
+    }
+
+    /** Resumes a paused [ScreenAgent] task after the user completes a manual step on screen. */
+    fun resumePausedTask() {
+        onAnswered()
+        if (!CommandBridge.resumePausedTask()) {
+            addAssistant("There is no paused task to resume.")
+        }
+    }
+
+    /** Cancels a paused [ScreenAgent] task without resuming it. */
+    fun cancelPausedTask() {
+        CommandBridge.clearPausedTask()
+        addAssistant("Okay, I've cancelled the paused task.")
     }
 
     /** Cancels a request still being understood; returns false if there wasn't one. */

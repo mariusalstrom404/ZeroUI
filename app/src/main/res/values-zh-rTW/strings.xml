@@ -30,6 +30,8 @@
     <string name="heard_listening">正在聆聽…</string>
     <string name="banner_awaiting_title">任務正在等待你的回覆</string>
     <string name="banner_awaiting_subtitle">你下一句輸入將直接回答進行中的自動化任務</string>
+    <string name="banner_paused_title">任務已暫停，等待你完成畫面操作</string>
+    <string name="action_resume_task">繼續任務</string>
     <string name="action_cancel_task">取消任務</string>
     <string name="action_retry">重試</string>
     <string name="action_confirm">確認執行</string>
@@ -91,6 +93,7 @@
     <string name="history_status_success">完成</string>
     <string name="history_status_failed">失敗</string>
     <string name="history_status_cancelled">已停止</string>
+    <string name="history_status_paused">已暫停</string>
     <string name="history_status_needs_input">待確認</string>
 
     <!-- Settings Sheet -->
@@ -115,6 +118,10 @@
     <string name="settings_llm_configured">已設定 API 金鑰</string>
     <string name="settings_llm_missing">尚未設定 API 金鑰</string>
     <string name="settings_clear_chat">清空目前對話紀錄</string>
+    <string name="settings_app_memory">App 探索記憶（個人化加速）</string>
+    <string name="settings_app_memory_desc">於本機記住各 App 彈窗關閉鈕與常用路徑（絕不記錄密碼或輸入文字）</string>
+    <string name="settings_clear_memory">清除已學習的 App 記憶（%1$d 個 App）</string>
+    <string name="settings_memory_cleared">已清除 App 探索記憶</string>
     <string name="settings_privacy_note">僅在理解指令或操作無腳本 App 時，才會將語音文字與畫面元件標籤（不含截圖與密碼）傳送至 OpenAI。</string>
     <string name="floating_hidden_toast">已隱藏懸浮麥克風，可隨時在 ZeroUI 設定中重新開啟。</string>
 </resources>

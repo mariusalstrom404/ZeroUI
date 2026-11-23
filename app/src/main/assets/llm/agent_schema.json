@@ -15,12 +15,16 @@
       "type": "string",
       "enum": [
         "tap",
+        "long_press",
         "type",
         "scroll_down",
         "scroll_up",
+        "scroll_left",
+        "scroll_right",
         "back",
         "wait",
         "ask_user",
+        "pause_for_user",
         "done",
         "give_up"
       ]

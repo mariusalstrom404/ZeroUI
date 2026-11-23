@@ -1,5 +1,7 @@
 package com.example.myapplication.automation
 
+import android.graphics.Rect
+import android.os.Build
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.myapplication.debug.Timing
 import kotlinx.coroutines.delay
@@ -8,9 +10,9 @@ import kotlinx.coroutines.delay
  * [ScreenDevice] over the accessibility tree of the top-most app window (never ZeroUI's own).
  * Only text from the tree is read; password fields' contents are left out.
  *
- * Optimised to walk the accessibility tree once per snapshot, computing bounds, click targets,
- * tap labels, and loading-spinner presence in a single pass, and reusing the settled snapshot
- * directly instead of reading the tree twice.
+ * Enriches each [ScreenNode] with semantic state (checked, selected, role, region, hint,
+ * scroll directions), popup-overlay detection, scroll boundary summaries, and automatic
+ * stale-node recovery when a view recycles between LLM decision and execution.
  */
 class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDevice {
 
@@ -37,6 +39,8 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
     private data class SnapshotResult(val screen: Screen, val loading: Boolean)
 
     private var live: Map<Int, AccessibilityNodeInfo> = emptyMap()
+    private var liveMeta: Map<Int, ScreenNode> = emptyMap()
+    private var lastAppPackage: String? = null
 
     /** When the last tap, typing, scroll or back finished, so a read waits for its effect. */
     private var lastActionAt = 0L
@@ -107,15 +111,26 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
 
     private fun snapshot(): SnapshotResult {
         val finder = engine.finder
-        val root = finder.roots().firstOrNull()
+        val roots = finder.roots()
+        val root = roots.firstOrNull()
+        val appPkg = root?.packageName?.toString()
+        // Multiple application windows belonging to the same app usually means a Dialog or BottomSheet is on top.
+        val isPopupOverlay = appPkg != null && roots.count { it.packageName?.toString() == appPkg } > 1
+        val dm = finder.service.resources.displayMetrics
+        val screenW = dm.widthPixels.coerceAtLeast(1)
+        val screenH = dm.heightPixels.coerceAtLeast(1)
+
         val nodes = mutableListOf<ScreenNode>()
         val map = mutableMapOf<Int, AccessibilityNodeInfo>()
-        val labelled = mutableListOf<Pair<String, android.graphics.Rect>>()
+        val metaMap = mutableMapOf<Int, ScreenNode>()
+        val labelled = mutableListOf<Pair<String, Rect>>()
         var loading = false
+        var mainScrollArea = 0L
+        var mainScrollDirs: List<String> = emptyList()
+
         if (root != null) {
             for (node in finder.flatten(root)) {
                 if (!node.isVisibleToUser) continue
-                // Check loading state in the same single pass.
                 if (!loading) {
                     val isSpinner = node.className?.toString() == PROGRESS_BAR && node.rangeInfo == null
                     val rawLabel = (node.text ?: node.contentDescription)?.toString()?.trim()
@@ -126,35 +141,65 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
                 if (nodes.size >= MAX_NODES) continue
                 val bounds = finder.boundsOf(node)
                 if (bounds.isEmpty) continue
+
+                val dirs = if (node.isScrollable) scrollDirectionsOf(node) else emptyList()
+                if (node.isScrollable) {
+                    val area = bounds.width().toLong() * bounds.height()
+                    if (area > mainScrollArea) {
+                        mainScrollArea = area
+                        mainScrollDirs = dirs
+                    }
+                }
+
                 val label = labelOf(node)
-                val interactive = node.isClickable || node.isEditable || node.isScrollable
+                val hint = hintOf(node)
+                val interactive = node.isClickable || node.isEditable || node.isScrollable || node.isCheckable
                 if (label == null && !interactive) continue
-                // A button's text child repeats the button's label; listing it again only uses up
-                // the node budget, which used to cut off whatever came last (often the bottom tabs).
                 if (!interactive && labelled.any { (l, b) -> l == label && b.contains(bounds) }) continue
                 if (interactive && label != null) labelled += label to bounds
+
                 val clickTarget = if (node.isClickable) node else finder.clickTarget(node)
+                val role = roleOf(node)
+                val region = regionOf(bounds, screenW, screenH, iconOnly = label == null, role = role)
                 val id = nodes.size
-                nodes += ScreenNode(
+                val screenNode = ScreenNode(
                     id = id,
                     label = label,
-                    viewId = node.viewIdResourceName?.substringAfterLast('/')?.takeIf { label == null },
+                    viewId = node.viewIdResourceName?.substringAfterLast('/')?.takeIf { label == null || node.isEditable },
                     tappable = clickTarget != null,
                     editable = node.isEditable,
                     scrollable = node.isScrollable,
                     enabled = node.isEnabled,
                     password = node.isPassword,
-                    tapLabels = finder.tapLabels(node, clickTarget)
+                    tapLabels = finder.tapLabels(node, clickTarget),
+                    checked = if (node.isCheckable) node.isChecked else null,
+                    selected = node.isSelected,
+                    role = role,
+                    region = region,
+                    hint = if (node.isEditable) hint else null,
+                    scrollDirs = dirs
                 )
+                nodes += screenNode
                 map[id] = node
+                metaMap[id] = screenNode
             }
         }
         live = map
-        return SnapshotResult(Screen(root?.packageName?.toString(), nodes), loading)
+        liveMeta = metaMap
+        lastAppPackage = appPkg
+
+        val scrollSummary = when {
+            mainScrollArea == 0L -> null
+            "down" in mainScrollDirs && "up" in mainScrollDirs -> "can_scroll_down, can_scroll_up"
+            "down" in mainScrollDirs -> "can_scroll_down"
+            "up" in mainScrollDirs -> "at_bottom, can_scroll_up"
+            else -> null
+        }
+        return SnapshotResult(Screen(appPkg, nodes, isPopupOverlay = isPopupOverlay, scrollSummary = scrollSummary), loading)
     }
 
     private fun labelOf(node: AccessibilityNodeInfo): String? {
-        val hint = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) node.hintText else null
+        val hint = hintOf(node)
         // A password field's text is never read, only what it is for.
         val text = if (node.isPassword) null else node.text
         return listOf(text, node.contentDescription, hint)
@@ -162,20 +207,101 @@ class AccessibilityScreenDevice(private val engine: AutomationEngine) : ScreenDe
             ?.toString()?.trim()?.take(MAX_LABEL)
     }
 
+    private fun hintOf(node: AccessibilityNodeInfo): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            node.hintText?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.take(MAX_LABEL)
+        } else {
+            null
+        }
+
+    private fun roleOf(node: AccessibilityNodeInfo): String? {
+        val cls = node.className?.toString()?.lowercase() ?: return null
+        return when {
+            "switch" in cls || "togglebutton" in cls -> "switch"
+            "checkbox" in cls -> "checkbox"
+            "radiobutton" in cls -> "radio"
+            "tab" in cls -> "tab"
+            else -> null
+        }
+    }
+
+    /** Coarse region hint emitted only for icon-only buttons or top/bottom navigation controls to save tokens. */
+    private fun regionOf(bounds: Rect, screenW: Int, screenH: Int, iconOnly: Boolean, role: String?): String? {
+        val cx = bounds.centerX().toFloat() / screenW
+        val cy = bounds.centerY().toFloat() / screenH
+        return when {
+            cy <= 0.14f && cx <= 0.22f && iconOnly -> "top-left"
+            cy <= 0.14f && cx >= 0.78f && iconOnly -> "top-right"
+            cy >= 0.88f && (iconOnly || role == "tab") -> "bottom-bar"
+            else -> null
+        }
+    }
+
+    private fun scrollDirectionsOf(node: AccessibilityNodeInfo): List<String> {
+        val ids = node.actionList.map { it.id }.toSet()
+        val out = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id in ids) out += "down"
+            if (AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id in ids) out += "up"
+            if (AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id in ids) out += "right"
+            if (AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id in ids) out += "left"
+        }
+        if (out.isEmpty()) {
+            if (AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in ids) out += "down"
+            if (AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD in ids) out += "up"
+        }
+        return out
+    }
+
+    /**
+     * Resolves a live node by [id]. If the view was recycled/recomposed during the LLM round-trip,
+     * immediately re-locates it by its original [ScreenNode.viewId] or [ScreenNode.label].
+     */
+    private fun resolveNode(id: Int, editable: Boolean = false): AccessibilityNodeInfo? {
+        live[id]?.takeIf { it.refresh() }?.let { return it }
+        val meta = liveMeta[id] ?: return null
+        if (meta.viewId == null && meta.label == null) return null
+        val selector = Selector(resourceId = meta.viewId, text = meta.label, exact = meta.label != null)
+        return if (editable) {
+            engine.finder.findEditable(selector, lastAppPackage)
+        } else {
+            engine.finder.find(selector, lastAppPackage)
+        }
+    }
+
     // Actions skip the engine's fixed waits: read() waits for exactly as long as the app needs.
 
     override suspend fun tap(id: Int): Boolean {
-        val node = live[id]?.takeIf { it.refresh() } ?: return false
+        val node = resolveNode(id) ?: return false
         return engine.click(node).also { acted() }
     }
 
+    override suspend fun longPress(id: Int): Boolean {
+        val node = resolveNode(id) ?: return false
+        return engine.longClick(node).also { acted() }
+    }
+
     override suspend fun type(id: Int, text: String, submit: Boolean): Boolean {
-        val node = live[id]?.takeIf { it.refresh() } ?: return false
+        val node = resolveNode(id, editable = true) ?: return false
         return engine.typeIntoNode(node, text, submit, settle = false).also { acted() }
     }
 
     override suspend fun scroll(down: Boolean): Boolean =
         engine.scroll(down, packageName = null, settle = false).also { acted() }
+
+    override suspend fun scroll(down: Boolean, nodeId: Int?): Boolean {
+        val container = nodeId?.let { resolveNode(it) }
+        return if (container != null) {
+            engine.scroll(container, down, settle = false).also { acted() }
+        } else {
+            scroll(down)
+        }
+    }
+
+    override suspend fun scrollHorizontal(left: Boolean, nodeId: Int?): Boolean {
+        val container = nodeId?.let { resolveNode(it) }
+        return engine.scrollHorizontal(left, container = container, packageName = null, settle = false).also { acted() }
+    }
 
     override suspend fun back() {
         engine.back(settle = false)

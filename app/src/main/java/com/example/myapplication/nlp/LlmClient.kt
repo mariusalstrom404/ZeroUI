@@ -62,8 +62,16 @@ interface LlmClient {
  */
 class OpenAiLlmClient(private val assets: AssetManager) : LlmClient, ScreenLlm {
 
-    override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenTurn {
-        val input = LlmJson.screenInput(StayDate.today(), goal, history, screen)
+    override suspend fun nextScreenAction(goal: String, history: List<String>, screen: String): ScreenTurn =
+        nextScreenAction(goal, history, screen, appHints = null)
+
+    override suspend fun nextScreenAction(
+        goal: String,
+        history: List<String>,
+        screen: String,
+        appHints: String?
+    ): ScreenTurn {
+        val input = LlmJson.screenInput(StayDate.today(), goal, history, screen, appHints)
         val text = post("screen_action", "agent_prompt.txt", "agent_schema.json", input, "step ${history.size + 1}", preferredEffort = AGENT_REASONING_EFFORT)
         return LlmJson.screenTurn(text)
     }

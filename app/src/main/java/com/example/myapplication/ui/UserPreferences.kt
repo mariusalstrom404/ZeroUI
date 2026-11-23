@@ -23,6 +23,7 @@ object UserPreferences {
     private const val KEY_FLOATING_Y = "floating_y_px"
     private const val KEY_FLOATING_SAVED = "floating_pos_saved"
     private const val KEY_PINNED_COMMANDS = "pinned_commands"
+    private const val KEY_APP_MEMORY_ENABLED = "app_memory_enabled"
 
     const val LOCALE_AUTO = "auto"
     const val LOCALE_EN_US = "en-US"
@@ -48,6 +49,9 @@ object UserPreferences {
     private val _pinnedCommands = MutableStateFlow<List<String>>(emptyList())
     val pinnedCommands: StateFlow<List<String>> = _pinnedCommands
 
+    private val _appMemoryEnabled = MutableStateFlow(true)
+    val appMemoryEnabled: StateFlow<Boolean> = _appMemoryEnabled
+
     fun init(context: Context) {
         if (prefs != null) return
         val p = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
@@ -58,6 +62,12 @@ object UserPreferences {
         _floatingVisible.value = p.getBoolean(KEY_FLOATING_VISIBLE, true)
         _floatingAutoDim.value = p.getBoolean(KEY_FLOATING_AUTO_DIM, true)
         _pinnedCommands.value = loadPinned(p)
+        _appMemoryEnabled.value = p.getBoolean(KEY_APP_MEMORY_ENABLED, true)
+    }
+
+    fun setAppMemoryEnabled(enabled: Boolean) {
+        _appMemoryEnabled.value = enabled
+        prefs?.edit()?.putBoolean(KEY_APP_MEMORY_ENABLED, enabled)?.apply()
     }
 
     fun setTtsMuted(muted: Boolean) {

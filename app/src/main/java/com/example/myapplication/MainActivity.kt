@@ -71,6 +71,7 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.QuestionAnswer
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Stop
@@ -132,6 +133,7 @@ import com.example.myapplication.ui.components.hasMicPermission
 import com.example.myapplication.ui.components.openSettingsSafely
 import com.example.myapplication.ui.theme.ListeningRed
 import com.example.myapplication.ui.theme.MyApplicationTheme
+import com.example.myapplication.ui.theme.SuccessGreen
 import com.example.myapplication.ui.theme.WarningAmber
 import com.example.myapplication.ui.theme.WorkingViolet
 import kotlinx.coroutines.flow.StateFlow
@@ -214,6 +216,7 @@ class MainActivity : ComponentActivity() {
                     voiceLevelFlow = speech.level,
                     isProcessing = viewModel.isProcessing,
                     awaitingAnswer = viewModel.awaitingAnswer,
+                    pausedTaskReason = viewModel.pausedTaskReason,
                     canStop = viewModel.isProcessing && !viewModel.awaitingAnswer,
                     ttsMuted = ttsMuted,
                     speechError = speechErrorMessage,
@@ -237,6 +240,8 @@ class MainActivity : ComponentActivity() {
                     },
                     onStopListening = { speech.stopListening() },
                     onStop = { viewModel.stop() },
+                    onResumePausedTask = { viewModel.resumePausedTask() },
+                    onCancelPausedTask = { viewModel.cancelPausedTask() },
                     onSend = {
                         speechErrorMessage = null
                         viewModel.onUserCommand(it)
@@ -318,6 +323,7 @@ fun ZeroUIAssistantSheet(
     voiceLevelFlow: StateFlow<Float>,
     isProcessing: Boolean,
     awaitingAnswer: Boolean,
+    pausedTaskReason: String?,
     canStop: Boolean,
     ttsMuted: Boolean,
     speechError: String?,
@@ -328,6 +334,8 @@ fun ZeroUIAssistantSheet(
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
     onStop: () -> Unit,
+    onResumePausedTask: () -> Unit,
+    onCancelPausedTask: () -> Unit,
     onSend: (String) -> Unit,
     onToggleMute: () -> Unit,
     onClearChat: () -> Unit,
@@ -511,6 +519,20 @@ fun ZeroUIAssistantSheet(
                 ) {
                     AwaitingAnswerBanner(
                         onCancelTask = onStop,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
+
+                // Human-in-the-loop paused task banner (e.g. after login/OTP/private field handover)
+                AnimatedVisibility(
+                    visible = !awaitingAnswer && pausedTaskReason != null,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    PausedTaskBanner(
+                        reason = pausedTaskReason.orEmpty(),
+                        onResume = onResumePausedTask,
+                        onCancel = onCancelPausedTask,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                     )
                 }
@@ -767,6 +789,65 @@ private fun AwaitingAnswerBanner(onCancelTask: () -> Unit, modifier: Modifier = 
             }
             TextButton(onClick = onCancelTask, contentPadding = PaddingValues(horizontal = 8.dp)) {
                 Text(stringResource(R.string.action_cancel_task), color = ListeningRed)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PausedTaskBanner(
+    reason: String,
+    onResume: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = SuccessGreen.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.PlayArrow,
+                contentDescription = null,
+                tint = SuccessGreen,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.banner_paused_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                if (reason.isNotBlank()) {
+                    Text(
+                        reason,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
+            }
+            TextButton(onClick = onResume, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                Text(
+                    stringResource(R.string.action_resume_task),
+                    color = SuccessGreen,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            IconButton(onClick = onCancel, modifier = Modifier.size(30.dp)) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = stringResource(R.string.action_cancel_task),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
     }

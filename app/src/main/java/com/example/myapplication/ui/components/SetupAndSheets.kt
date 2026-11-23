@@ -74,6 +74,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.myapplication.R
+import com.example.myapplication.automation.AppMemory
 import com.example.myapplication.history.OperationRecord
 import com.example.myapplication.ipc.CommandBridge
 import com.example.myapplication.nlp.OpenAiLlmClient
@@ -431,6 +432,7 @@ private fun HistoryRecordCard(
         "SUCCESS" -> stringResource(R.string.history_status_success) to SuccessGreen
         "FAILED" -> stringResource(R.string.history_status_failed) to ListeningRed
         "CANCELLED" -> stringResource(R.string.history_status_cancelled) to MaterialTheme.colorScheme.onSurfaceVariant
+        "PAUSED" -> stringResource(R.string.history_status_paused) to WarningAmber
         "NEEDS_INPUT" -> stringResource(R.string.history_status_needs_input) to WarningAmber
         else -> record.status to MaterialTheme.colorScheme.primary
     }
@@ -532,6 +534,8 @@ fun SettingsSheet(
     val speechLocale by UserPreferences.speechLocaleTag.collectAsState()
     val floatingVisible by UserPreferences.floatingVisible.collectAsState()
     val floatingAutoDim by UserPreferences.floatingAutoDim.collectAsState()
+    val appMemoryEnabled by UserPreferences.appMemoryEnabled.collectAsState()
+    val learnedAppCount by AppMemory.learnedAppCount.collectAsState()
 
     val apiConfigured = remember { OpenAiLlmClient.isConfigured() }
 
@@ -687,6 +691,31 @@ fun SettingsSheet(
                     }
                 }
 
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                ToggleRow(
+                    title = stringResource(R.string.settings_app_memory),
+                    subtitle = stringResource(R.string.settings_app_memory_desc),
+                    checked = appMemoryEnabled,
+                    onCheckedChange = { UserPreferences.setAppMemoryEnabled(it) }
+                )
+
+                val clearedToast = stringResource(R.string.settings_memory_cleared)
+                OutlinedButton(
+                    onClick = {
+                        AppMemory.clear()
+                        Toast.makeText(context, clearedToast, Toast.LENGTH_SHORT).show()
+                    },
+                    enabled = learnedAppCount > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.settings_clear_memory, learnedAppCount))
+                }
+
+                Spacer(Modifier.height(6.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
                 Row(

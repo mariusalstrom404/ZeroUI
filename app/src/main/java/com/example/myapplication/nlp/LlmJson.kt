@@ -65,9 +65,16 @@ object LlmJson {
         "Today: ${isoDate(today)}\nDetail being collected: $slot\nQuestion: $question\nReply: $answer"
 
     /** History only grows during a run, so each step's input starts with the previous step's. */
-    fun screenInput(today: StayDate, goal: String, history: List<String>, screen: String): String {
+    fun screenInput(
+        today: StayDate,
+        goal: String,
+        history: List<String>,
+        screen: String,
+        appHints: String? = null
+    ): String {
         val steps = if (history.isEmpty()) "Nothing yet." else history.joinToString("\n")
-        return "Today: ${isoDate(today)}\nGoal: $goal\n\nSo far:\n$steps\n\nCurrent screen:\n$screen"
+        val hintsBlock = appHints?.trim()?.takeIf { it.isNotEmpty() }?.let { "\n\nApp hints:\n$it" } ?: ""
+        return "Today: ${isoDate(today)}\nGoal: $goal$hintsBlock\n\nSo far:\n$steps\n\nCurrent screen:\n$screen"
     }
 
     /** Token counts from a Responses API reply, for the timing log; empty if it has none. */
@@ -217,12 +224,16 @@ object LlmJson {
         val node = o.count("node", 0..Int.MAX_VALUE)
         return when (o.optString("action")) {
             "tap" -> ScreenAction.Tap(node)
+            "long_press" -> ScreenAction.LongPress(node)
             "type" -> ScreenAction.Type(node, o.text("text"), o.bool("submit") ?: false)
-            "scroll_down" -> ScreenAction.ScrollDown
-            "scroll_up" -> ScreenAction.ScrollUp
+            "scroll_down" -> ScreenAction.ScrollDown(node)
+            "scroll_up" -> ScreenAction.ScrollUp(node)
+            "scroll_left" -> ScreenAction.ScrollLeft(node)
+            "scroll_right" -> ScreenAction.ScrollRight(node)
             "back" -> ScreenAction.Back
             "wait" -> ScreenAction.Wait
             "ask_user" -> ScreenAction.Ask(o.text("say"), o.choices())
+            "pause_for_user" -> ScreenAction.PauseForUser(o.text("say"))
             "done" -> ScreenAction.Done(o.text("say"))
             "give_up" -> ScreenAction.GiveUp(o.text("say"))
             else -> null

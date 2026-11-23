@@ -65,4 +65,21 @@ class ActionGuardTest {
         assertTrue(ActionGuard.isPaymentScreen(listOf("Your order", "Payment method", "Visa")))
         assertFalse(ActionGuard.isPaymentScreen(listOf("Your cart", "Hawaiian Pizza")))
     }
+
+    @Test
+    fun reversiblePickerConfirmationsAreAllowedWithoutInterruption() {
+        assertEquals(ActionGuard.Verdict.ALLOW, tap("Confirm dates"))
+        assertEquals(ActionGuard.Verdict.ALLOW, tap("確認篩選"))
+        assertEquals(ActionGuard.Verdict.ALLOW, tap("確認地點"))
+        // Bare "Confirm" is allowed on a date/filter picker screen, but still requires confirmation on risky screens.
+        assertEquals(
+            ActionGuard.Verdict.ALLOW,
+            ActionGuard.forTap(listOf("Confirm"), screenLabels = listOf("Select dates", "Check-in", "Confirm"))
+        )
+        assertEquals(
+            ActionGuard.Verdict.CONFIRM,
+            ActionGuard.forTap(listOf("Confirm"), screenLabels = listOf("Transfer $50 to Bob", "Confirm"))
+        )
+        assertEquals(ActionGuard.Verdict.CONFIRM, tap("Confirm"))
+    }
 }
