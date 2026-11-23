@@ -133,6 +133,7 @@ import com.example.myapplication.ui.theme.ListeningRed
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import com.example.myapplication.ui.theme.WarningAmber
 import com.example.myapplication.ui.theme.WorkingViolet
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -197,7 +198,6 @@ class MainActivity : ComponentActivity() {
             MyApplicationTheme {
                 val isListening by speech.isListening.collectAsState()
                 val partialText by speech.partialText.collectAsState()
-                val level by speech.level.collectAsState()
                 val ttsMuted by UserPreferences.ttsMuted.collectAsState()
                 val pinnedCommands by UserPreferences.pinnedCommands.collectAsState()
 
@@ -207,7 +207,7 @@ class MainActivity : ComponentActivity() {
                     pinnedCommands = pinnedCommands,
                     isListening = isListening,
                     partialText = partialText,
-                    voiceLevel = level,
+                    voiceLevelFlow = speech.level,
                     isProcessing = viewModel.isProcessing,
                     awaitingAnswer = viewModel.awaitingAnswer,
                     canStop = viewModel.isProcessing && !viewModel.awaitingAnswer,
@@ -288,7 +288,7 @@ fun ZeroUIAssistantSheet(
     pinnedCommands: List<String>,
     isListening: Boolean,
     partialText: String,
-    voiceLevel: Float,
+    voiceLevelFlow: StateFlow<Float>,
     isProcessing: Boolean,
     awaitingAnswer: Boolean,
     canStop: Boolean,
@@ -434,7 +434,10 @@ fun ZeroUIAssistantSheet(
                             )
                         }
                     } else {
-                        itemsIndexed(messages) { index, msg ->
+                        itemsIndexed(
+                            items = messages,
+                            key = { index, msg -> "${msg.timestamp}_${msg.isUser}_$index" }
+                        ) { index, msg ->
                             val isLatestAssistant = index == messages.lastIndex && !msg.isUser && !showHeard
                             val showInlineConfirm = isLatestAssistant && msg.kind == MessageKind.CONFIRM && msg.choices.isNotEmpty()
                             Column {
@@ -455,7 +458,7 @@ fun ZeroUIAssistantSheet(
                             }
                         }
                     }
-                    if (showHeard) item(key = "heard") { HeardBubble(partialText, voiceLevel) }
+                    if (showHeard) item(key = "heard") { HeardBubble(partialText, voiceLevelFlow) }
                     if (isProcessing) item(key = "typing") { TypingIndicator() }
                 }
 
@@ -494,7 +497,7 @@ fun ZeroUIAssistantSheet(
                     value = inputText,
                     onValueChange = { inputText = it },
                     isListening = isListening,
-                    voiceLevel = voiceLevel,
+                    voiceLevelFlow = voiceLevelFlow,
                     canStop = canStop,
                     awaitingAnswer = awaitingAnswer,
                     onMicClick = { if (isListening) onStopListening() else requestListen() },
@@ -650,13 +653,18 @@ fun StatusChip(isListening: Boolean, isProcessing: Boolean, awaitingAnswer: Bool
     }
 
     val active = isListening || isProcessing || awaitingAnswer
-    val infiniteTransition = rememberInfiniteTransition(label = "status-dot")
-    val dotScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = if (active) 1.55f else 1f,
-        animationSpec = infiniteRepeatable(tween(650, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "dot-scale"
-    )
+    // Only tick an infinite Choreographer transition while active; idle uses a static scale.
+    val dotScale = if (active) {
+        val infiniteTransition = rememberInfiniteTransition(label = "status-dot")
+        infiniteTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 1.55f,
+            animationSpec = infiniteRepeatable(tween(650, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "dot-scale"
+        ).value
+    } else {
+        1f
+    }
 
     Surface(
         color = chipColor.copy(alpha = 0.13f),
@@ -772,7 +780,8 @@ private fun SpeechErrorBanner(
 // ── Input Bar ─────────────────────────────────────────────────────────────────
 
 @Composable
-fun MicButton(isListening: Boolean, voiceLevel: Float, onClick: () -> Unit) {
+fun MicButton(isListening: Boolean, voiceLevelFlow: StateFlow<Float>, onClick: () -> Unit) {
+    val voiceLevel by voiceLevelFlow.collectAsState()
     val scale by animateFloatAsState(
         targetValue = if (isListening) 1f + 0.24f * voiceLevel else 1f,
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -820,7 +829,7 @@ fun InputBar(
     value: String,
     onValueChange: (String) -> Unit,
     isListening: Boolean,
-    voiceLevel: Float,
+    voiceLevelFlow: StateFlow<Float>,
     canStop: Boolean,
     awaitingAnswer: Boolean,
     onMicClick: () -> Unit,
@@ -850,7 +859,7 @@ fun InputBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Crossfade(targetState = canStop, label = "mic-or-stop") { stop ->
-                if (stop) StopButton(onStopClick) else MicButton(isListening, voiceLevel, onMicClick)
+                if (stop) StopButton(onStopClick) else MicButton(isListening, voiceLevelFlow, onMicClick)
             }
 
             Spacer(Modifier.width(10.dp))
@@ -863,7 +872,7 @@ fun InputBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    VoiceWaveform(level = voiceLevel, color = ListeningRed)
+                    VoiceWaveform(levelFlow = voiceLevelFlow, color = ListeningRed)
                     Text(
                         stringResource(R.string.heard_listening),
                         style = MaterialTheme.typography.bodyMedium,

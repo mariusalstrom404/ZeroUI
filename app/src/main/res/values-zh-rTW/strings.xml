@@ -44,6 +44,9 @@
     <string name="cat_device">裝置控制</string>
     <string name="cat_device_ex1">Check my battery</string>
     <string name="cat_device_ex2">Turn on the flashlight</string>
+    <string name="cat_daily">日常助理</string>
+    <string name="cat_daily_ex1">今天天氣如何</string>
+    <string name="cat_daily_ex2">倒計時 5 分鐘</string>
     <string name="cat_navigate">地圖導航</string>
     <string name="cat_navigate_ex1">Take me to the airport</string>
     <string name="cat_food">美食外送</string>

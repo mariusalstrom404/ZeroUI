@@ -59,27 +59,25 @@ class FoodGorillaAutomation(private val engine: AutomationEngine) {
                 false
             } else {
                 // 2. Verify screen change (Wait for Add-to-cart Dialog)
-                Log.e("ZeroUIAutomation", "[MENU_ITEM] click dispatched, waiting for dialog...")
+                Log.d(TAG, "[MENU_ITEM] click dispatched, waiting for dialog...")
+                val dialogSelectors = listOf(
+                    Selector(testTag = "add_to_cart_confirm"),
+                    Selector(text = "Add to Cart"),
+                    Selector(testTag = "quantity_increase")
+                )
                 var verified = false
-                for (i in 0 until 5) {
-                    delay(800)
-                    val foundDialog = engine.findNode(Selector(testTag = "add_to_cart_confirm")) != null || 
-                                    engine.findNode(Selector(text = "Add to Cart")) != null ||
-                                    engine.findNode(Selector(testTag = "quantity_increase")) != null
-                    
-                    if (foundDialog) {
+                for (i in 0 until 8) {
+                    engine.awaitScreenChangeOrDelay(300)
+                    if (engine.finder.findAny(dialogSelectors) != null) {
                         verified = true
                         break
                     }
-                    Log.e("ZeroUIAutomation", "[MENU_ITEM] retry verification ${i+1}/5")
                 }
 
                 if (verified) {
-                    Log.e("ZeroUIAutomation", "[STEP 1][MENU_ITEM] $itemName FOUND")
-                    Log.e("ZeroUIAutomation", "[MENU_ITEM] click VERIFIED SUCCESS")
+                    Log.d(TAG, "[STEP 1][MENU_ITEM] $itemName FOUND")
                     true
                 } else {
-                    Log.e("ZeroUIAutomation", "[MENU_ITEM] click dispatched but screen unchanged")
                     Log.e("ZeroUIAutomation", "[FAILED] step=OPEN_MENU_ITEM reason=dialog not appeared")
                     false
                 }
@@ -88,116 +86,63 @@ class FoodGorillaAutomation(private val engine: AutomationEngine) {
 
         // --- PHASE 4: ADD_TO_CART ---
         steps.add(AutomationStep(StepType.CUSTOM, description = "ADD_TO_CART") {
-            Log.e("ZeroUIAutomation", "[ADD_TO_CART] searching text contains \"Add to Cart\"")
             val selector = Selector(text = "Add to Cart")
-            
-            // 1. Find and Click
             val node = engine.waitForElement(selector, timeoutMs = 5000)
             if (node == null) {
                 Log.e("ZeroUIAutomation", "[ADD_TO_CART] FAILED: text node not found")
                 false
             } else {
-                Log.e("ZeroUIAutomation", "[ADD_TO_CART] text node FOUND")
-                val bounds = android.graphics.Rect()
-                node.getBoundsInScreen(bounds)
-                Log.e("ZeroUIAutomation", "[ADD_TO_CART] node bounds=${bounds.toShortString()}")
-                
-                val clickSuccess = engine.clickElement(selector)
-                Log.e("ZeroUIAutomation", "[ADD_TO_CART] ACTION_CLICK result=$clickSuccess")
-                
+                val clickSuccess = engine.click(node)
                 if (!clickSuccess) {
                     Log.e("ZeroUIAutomation", "[ADD_TO_CART] FAILED: click failed")
                     false
                 } else {
-                    // 2. Verify
-                    Log.e("ZeroUIAutomation", "[ADD_TO_CART] reacquire root")
+                    val dialogSelectors = listOf(
+                        Selector(text = "Add to Cart"),
+                        Selector(testTag = "quantity_increase")
+                    )
                     var verified = false
-                    for (i in 0 until 5) {
-                        delay(800)
-                        // Check if dialog is gone (no "Add to Cart" text and no quantity button)
-                        val stillVisible = engine.findNode(Selector(text = "Add to Cart")) != null || 
-                                          engine.findNode(Selector(testTag = "quantity_increase")) != null
-                        
-                        Log.e("ZeroUIAutomation", "[ADD_TO_CART] dialog still visible=$stillVisible")
-                        if (!stillVisible) {
+                    for (i in 0 until 8) {
+                        engine.awaitScreenChangeOrDelay(300)
+                        if (engine.finder.findAny(dialogSelectors) == null) {
                             verified = true
                             break
                         }
-                        Log.e("ZeroUIAutomation", "[ADD_TO_CART] retry verification ${i+1}/5")
                     }
-
-                    if (verified) {
-                        Log.e("ZeroUIAutomation", "[ADD_TO_CART] VERIFIED SUCCESS")
-                        true
-                    } else {
-                        Log.e("ZeroUIAutomation", "[ADD_TO_CART] click dispatched but dialog still visible")
-                        Log.e("ZeroUIAutomation", "[ADD_TO_CART] FAILED")
-                        false
-                    }
+                    verified
                 }
             }
         })
 
         // --- PHASE 5: OPEN_CART ---
         steps.add(AutomationStep(StepType.CUSTOM, description = "OPEN_CART") {
-            Log.e("ZeroUIAutomation", "[STEP 3][CART] Searching Cart button")
-            // Try description first as requested
             val selector = Selector(contentDescription = "Cart", testTag = "cart_button")
-            val success = engine.clickElement(selector)
-            if (success) {
-                Log.e("ZeroUIAutomation", "[STEP 3][CART] Cart FOUND")
-                Log.e("ZeroUIAutomation", "[STEP 3][CART] click SUCCESS")
-            } else {
-                Log.e("ZeroUIAutomation", "[FAILED] step=OPEN_CART reason=cart button not found")
-            }
-            success
+            engine.clickElement(selector)
         })
 
         // --- PHASE 6: CHECKOUT ---
         steps.add(AutomationStep(StepType.CUSTOM, description = "CHECKOUT") {
-            Log.e("ZeroUIAutomation", "[CHECKOUT] searching Go to Checkout")
             val selector = Selector(text = "Go to Checkout", testTag = "go_to_checkout")
-            
-            // 1. Wait and Click
             val node = engine.waitForElement(selector, timeoutMs = 5000)
             if (node == null) {
-                Log.e("ZeroUIAutomation", "[CHECKOUT] byText = NOT FOUND")
                 false
             } else {
-                Log.e("ZeroUIAutomation", "[CHECKOUT] byText = FOUND")
-                val bounds = android.graphics.Rect()
-                node.getBoundsInScreen(bounds)
-                Log.e("ZeroUIAutomation", "[CHECKOUT] exactNode bounds=${bounds.toShortString()}")
-                
-                val success = engine.clickElement(selector)
+                val success = engine.click(node)
                 if (success) {
-                    Log.e("ZeroUIAutomation", "[CHECKOUT] click DISPATCHED")
-                    
-                    // 2. Verify transition to Checkout Screen
-                    Log.e("ZeroUIAutomation", "[CHECKOUT] reacquire root for verification")
+                    val checkoutSelectors = listOf(
+                        Selector(text = "Confirm Order"),
+                        Selector(text = "Delivery Details")
+                    )
                     var verified = false
-                    for (i in 0 until 5) {
-                        delay(1000)
-                        val foundCheckout = engine.findNode(Selector(text = "Confirm Order")) != null || 
-                                          engine.findNode(Selector(text = "Delivery Details")) != null
-                        
-                        if (foundCheckout) {
+                    for (i in 0 until 10) {
+                        engine.awaitScreenChangeOrDelay(350)
+                        if (engine.finder.findAny(checkoutSelectors) != null) {
                             verified = true
                             break
                         }
-                        Log.e("ZeroUIAutomation", "[CHECKOUT] retry verification ${i+1}/5")
                     }
-                    
-                    if (verified) {
-                        Log.e("ZeroUIAutomation", "[STEP 4][CHECKOUT] Go to Checkout FOUND")
-                        Log.e("ZeroUIAutomation", "[CHECKOUT] VERIFIED SUCCESS")
-                        true
-                    } else {
-                        Log.e("ZeroUIAutomation", "[CHECKOUT] FAILED: checkout screen not detected")
-                        false
-                    }
+                    verified
                 } else {
-                    Log.e("ZeroUIAutomation", "[CHECKOUT] FAILED: click failed")
                     false
                 }
             }
@@ -205,24 +150,9 @@ class FoodGorillaAutomation(private val engine: AutomationEngine) {
 
         // --- PHASE 7: CONFIRM_ORDER ---
         steps.add(AutomationStep(StepType.CUSTOM, description = "CONFIRM_ORDER") {
-            Log.e("ZeroUIAutomation", "[ORDER] searching Confirm Order")
             val selector = Selector(text = "Confirm Order", testTag = "confirm_order")
-            
             val node = engine.waitForElement(selector, timeoutMs = 5000)
-            if (node == null) {
-                Log.e("ZeroUIAutomation", "[ORDER] byText = NOT FOUND")
-                false
-            } else {
-                val success = engine.clickElement(selector)
-                if (success) {
-                    Log.e("ZeroUIAutomation", "[ORDER] Confirm Order FOUND")
-                    Log.e("ZeroUIAutomation", "[STEP 5][ORDER] click SUCCESS")
-                    true
-                } else {
-                    Log.e("ZeroUIAutomation", "[ORDER] FAILED: click failed")
-                    false
-                }
-            }
+            if (node == null) false else engine.click(node)
         })
 
         // --- PHASE 8: COMPLETE ---

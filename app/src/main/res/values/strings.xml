@@ -44,6 +44,9 @@
     <string name="cat_device">Device Control</string>
     <string name="cat_device_ex1">Check my battery</string>
     <string name="cat_device_ex2">Turn on the flashlight</string>
+    <string name="cat_daily">Daily Assistant</string>
+    <string name="cat_daily_ex1">What\'s the weather today?</string>
+    <string name="cat_daily_ex2">Set a timer for 5 minutes</string>
     <string name="cat_navigate">Navigation</string>
     <string name="cat_navigate_ex1">Take me to the airport</string>
     <string name="cat_food">Food Delivery</string>

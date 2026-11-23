@@ -1,14 +1,17 @@
 package com.example.myapplication
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.provider.AlarmClock
 import android.provider.Settings
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -49,14 +52,24 @@ class MyAccessibilityService : AccessibilityService() {
     private var listening = false
     private var understanding = false
     private var runningChains = 0
-    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var currentJob: Job? = null
 
+    private val llmClient by lazy { OpenAiLlmClient(assets) }
     private val automationEngine by lazy { AutomationEngine(this) }
     private val foodGorillaAuto by lazy { FoodGorillaAutomation(automationEngine) }
     private val foodDeliveryAuto by lazy { FoodDeliveryAutomation(automationEngine) }
     private val bookingAuto by lazy { BookingAutomation(automationEngine) }
     private var dumpJob: Job? = null
+
+    @Volatile private var cachedLauncherApps: List<InstalledApp>? = null
+    private var packageReceiverRegistered = false
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            cachedLauncherApps = null
+            serviceScope.launch(Dispatchers.IO) { launcherApps() }
+        }
+    }
 
     private var statusIndicator: StatusIndicator? = null
     private var activeUtterance: String = ""
@@ -151,8 +164,36 @@ class MyAccessibilityService : AccessibilityService() {
         }
         automationEngine.onProgress = { statusIndicator?.updateDetail(it) }
         automationEngine.onGesturePassThrough = { statusIndicator?.setPassThrough(it) }
+        // Warm launcher app cache on IO so the first OpenApp / TypeText doesn't block on PackageManager IPC.
+        registerPackageWatcher()
+        serviceScope.launch(Dispatchers.IO) { launcherApps() }
         Log.e("ZeroUIAutomation", "ACCESSIBILITY SERVICE CONNECTED")
         Log.d("NLPControl", "Service connected and ready")
+    }
+
+    private fun registerPackageWatcher() {
+        if (packageReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(packageReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(packageReceiver, filter)
+            }
+            packageReceiverRegistered = true
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Human-readable name (or package) of the app currently visible underneath ZeroUI. */
+    fun foregroundAppLabel(): String? {
+        val pkg = automationEngine.finder.activeForegroundPackage() ?: return null
+        return cachedLauncherApps?.firstOrNull { it.packageName == pkg }?.label ?: pkg
     }
 
     /** Re-applies floating button settings changed in the UI (visibility, auto-dim, position reset). */
@@ -323,6 +364,10 @@ class MyAccessibilityService : AccessibilityService() {
         AppIntent.RepeatLast -> "Repeating your last command"
         AppIntent.TakeScreenshot -> "Taking a screenshot"
         is AppIntent.CameraAction -> "Opening the camera"
+        is AppIntent.Weather -> "Checking the weather"
+        is AppIntent.SetAlarm -> "Setting an alarm"
+        is AppIntent.SetTimer -> "Starting a timer"
+        AppIntent.CurrentTime -> "Checking the time"
         is AppIntent.Navigate -> "Starting navigation"
         is AppIntent.OpenApp -> "Opening ${intent.name}".trim()
         is AppIntent.AppOrder -> "Ordering ${intent.item} on ${intent.app}"
@@ -694,14 +739,66 @@ class MyAccessibilityService : AccessibilityService() {
             // Navigation
             is AppIntent.Navigate -> {
                 if (!intent.destination.isNullOrEmpty()) {
-                    startNavigation(
-                        intent.destination,
-                        if (intent.mode == "bus") "r" else "d"
-                    )
+                    val modeFlag = when (intent.mode) {
+                        "bus" -> "r"
+                        "walking" -> "w"
+                        else -> "d"
+                    }
+                    startNavigation(intent.destination, modeFlag)
                     sendReply("Opening navigation to ${intent.destination}.")
                 } else {
                     ask("Where would you like to navigate to?")
                 }
+            }
+
+            // Everyday assistant intents (normally handled locally by VoiceViewModel, also supported here for chains)
+            is AppIntent.Weather -> {
+                val reply = com.example.myapplication.assistant.WeatherService.queryWeather(
+                    intent.location,
+                    intent.dayOffset,
+                    preferChinese = activeUtterance.any { it.code > 0x2E80 }
+                )
+                sendReply(reply)
+            }
+            is AppIntent.SetAlarm -> {
+                val h = intent.hour
+                val m = intent.minute ?: 0
+                if (h == null) {
+                    ask("What time should I set the alarm for?")
+                } else {
+                    val alarmIntent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+                        putExtra(AlarmClock.EXTRA_HOUR, h)
+                        putExtra(AlarmClock.EXTRA_MINUTES, m)
+                        putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                        intent.label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+                    }
+                    if (safeStartActivity(alarmIntent)) {
+                        sendReply(String.format(java.util.Locale.ROOT, "Alarm set for %02d:%02d.", h, m))
+                    } else {
+                        fail("I couldn't open the Clock app to set an alarm.")
+                    }
+                }
+            }
+            is AppIntent.SetTimer -> {
+                val sec = intent.durationSeconds
+                if (sec == null || sec <= 0) {
+                    ask("How long should I set the timer for?")
+                } else {
+                    val timerIntent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+                        putExtra(AlarmClock.EXTRA_LENGTH, sec)
+                        putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                        intent.label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+                    }
+                    if (safeStartActivity(timerIntent)) {
+                        sendReply("Timer started.")
+                    } else {
+                        fail("I couldn't open the Clock app to start a timer.")
+                    }
+                }
+            }
+            AppIntent.CurrentTime -> {
+                val fmt = java.text.SimpleDateFormat("yyyy/MM/dd (E) HH:mm", java.util.Locale.getDefault())
+                sendReply("It's ${fmt.format(java.util.Date())}.")
             }
 
             // App Launching
@@ -838,7 +935,7 @@ class MyAccessibilityService : AccessibilityService() {
         Timing.measure("Screen agent run") {
             ScreenAgent(
                 AccessibilityScreenDevice(automationEngine),
-                OpenAiLlmClient(assets),
+                llmClient,
                 AgentUser { question, choices -> askByVoice(question, choices) },
                 onProgress = { automationEngine.report(it) }
             ).run(goal)
@@ -1056,17 +1153,17 @@ class MyAccessibilityService : AccessibilityService() {
         if (outcome != Outcome.FAILED) outcome = Outcome.NEEDS_INPUT
     }
 
-    private fun openAppByName(name: String): Boolean = launchAppByName(name) != null
+    private fun openAppByName(name: String): Boolean = launchAppByName(name, clearTask = false) != null
 
     /** Launches the app best matching [name] and returns its package, or null if none could be started. */
-    private fun launchAppByName(name: String): String? {
-        return launchPackage(findAppByName(name) ?: return null)
+    private fun launchAppByName(name: String, clearTask: Boolean = true): String? {
+        return launchPackage(findAppByName(name) ?: return null, clearTask = clearTask)
     }
 
-    private fun launchPackage(pkg: String): String? {
+    private fun launchPackage(pkg: String, clearTask: Boolean = true): String? {
         val launchIntent = packageManager.getLaunchIntentForPackage(pkg) ?: return null
-        // CLEAR_TASK drops whatever screen the app was left on so it starts from its home page
-        launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        // CLEAR_TASK drops whatever screen the app was left on for scripted flows; plain OpenApp preserves state.
+        if (clearTask) launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
         return if (safeStartActivity(launchIntent)) pkg else null
     }
 
@@ -1082,12 +1179,15 @@ class MyAccessibilityService : AccessibilityService() {
     }
 
     private fun launcherApps(): List<InstalledApp> {
+        cachedLauncherApps?.let { return it }
         val pm = packageManager
         val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        return pm.queryIntentActivities(launcher, 0)
+        val apps = pm.queryIntentActivities(launcher, 0)
             .map { InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName) }
             .filter { it.packageName != packageName }
             .distinctBy { it.packageName to it.label }
+        cachedLauncherApps = apps
+        return apps
     }
 
     private fun safeStartActivity(intent: Intent): Boolean {
@@ -1194,6 +1294,10 @@ class MyAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (packageReceiverRegistered) {
+            try { unregisterReceiver(packageReceiver) } catch (_: Exception) {}
+            packageReceiverRegistered = false
+        }
         serviceScope.cancel()
         CommandBridge.detachService(this)
         statusIndicator?.destroy()

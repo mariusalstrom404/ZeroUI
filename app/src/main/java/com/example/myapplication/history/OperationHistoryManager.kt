@@ -1,6 +1,10 @@
 package com.example.myapplication.history
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -19,8 +23,11 @@ object OperationHistoryManager {
     private const val KEY_HISTORY = "history_records"
     private const val MAX_RECORDS = 50
 
+    private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val lock = Any()
+    private var cachedRecords: MutableList<OperationRecord>? = null
+
     fun addRecord(context: Context, utterance: String, description: String, status: String): OperationRecord {
-        val records = getRecords(context).toMutableList()
         val newRecord = OperationRecord(
             id = UUID.randomUUID().toString(),
             timestamp = System.currentTimeMillis(),
@@ -28,11 +35,17 @@ object OperationHistoryManager {
             description = description,
             status = status
         )
-        records.add(0, newRecord)
-        if (records.size > MAX_RECORDS) {
-            records.subList(MAX_RECORDS, records.size).clear()
+        val snapshot: List<OperationRecord>
+        synchronized(lock) {
+            val records = ensureLoaded(context)
+            records.add(0, newRecord)
+            if (records.size > MAX_RECORDS) {
+                records.subList(MAX_RECORDS, records.size).clear()
+            }
+            snapshot = records.toList()
         }
-        saveRecords(context, records)
+        val appCtx = context.applicationContext ?: context
+        ioScope.launch { saveRecords(appCtx, snapshot) }
         return newRecord
     }
 
@@ -51,33 +64,47 @@ object OperationHistoryManager {
         prefs.edit().putString(KEY_HISTORY, array.toString()).apply()
     }
 
-    fun getRecords(context: Context): List<OperationRecord> {
+    fun getRecords(context: Context): List<OperationRecord> = synchronized(lock) {
+        ensureLoaded(context).toList()
+    }
+
+    private fun ensureLoaded(context: Context): MutableList<OperationRecord> {
+        cachedRecords?.let { return it }
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        val jsonStr = prefs.getString(KEY_HISTORY, null) ?: return emptyList()
+        val jsonStr = prefs.getString(KEY_HISTORY, null)
         val list = mutableListOf<OperationRecord>()
-        try {
-            val array = JSONArray(jsonStr)
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                list.add(
-                    OperationRecord(
-                        id = obj.optString("id", UUID.randomUUID().toString()),
-                        timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
-                        utterance = obj.optString("utterance", ""),
-                        description = obj.optString("description", ""),
-                        status = obj.optString("status", "SUCCESS")
+        if (jsonStr != null) {
+            try {
+                val array = JSONArray(jsonStr)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    list.add(
+                        OperationRecord(
+                            id = obj.optString("id", UUID.randomUUID().toString()),
+                            timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+                            utterance = obj.optString("utterance", ""),
+                            description = obj.optString("description", ""),
+                            status = obj.optString("status", "SUCCESS")
+                        )
                     )
-                )
+                }
+            } catch (e: Exception) {
+                // Ignore parse errors
             }
-        } catch (e: Exception) {
-            // Ignore parse errors
         }
+        cachedRecords = list
         return list
     }
 
     fun clearHistory(context: Context) {
-        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        prefs.edit().remove(KEY_HISTORY).apply()
+        synchronized(lock) {
+            cachedRecords = mutableListOf()
+        }
+        val appCtx = context.applicationContext ?: context
+        ioScope.launch {
+            val prefs = appCtx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            prefs.edit().remove(KEY_HISTORY).apply()
+        }
     }
 
     fun formatHistorySummary(context: Context, limit: Int = 5): String {

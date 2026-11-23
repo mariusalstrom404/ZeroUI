@@ -10,6 +10,8 @@ import com.example.myapplication.ui.UserPreferences
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Process-wide text-to-speech shared by the conversational UI and the accessibility service.
@@ -23,11 +25,13 @@ object Speaker : TextToSpeech.OnInitListener {
     private const val MAX_SPEECH_WAIT_MS = 30000L
 
     private var tts: TextToSpeech? = null
-    private var ready = false
+    @Volatile private var ready = false
     /** Spoken as soon as the engine is ready, if [speak] was called before that. */
     private var pending: String? = null
     private var currentVoiceLocale: String? = null
     private val cachedVoices = mutableMapOf<String, Voice?>()
+    private val pendingWaiters = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val utteranceSeq = AtomicLong(0L)
 
     /** Starts the engine if it isn't running yet. Safe to call from every component. */
     fun init(context: Context) {
@@ -42,10 +46,23 @@ object Speaker : TextToSpeech.OnInitListener {
             tts = null
             return
         }
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) { completeWaiter(utteranceId) }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) { completeWaiter(utteranceId) }
+            override fun onError(utteranceId: String?, errorCode: Int) { completeWaiter(utteranceId) }
+            override fun onStop(utteranceId: String?, interrupted: Boolean) { completeWaiter(utteranceId) }
+        })
         ready = true
         applyLocaleAndRate(engine, Locale.US)
         pending?.let { speak(it) }
         pending = null
+    }
+
+    private fun completeWaiter(utteranceId: String?) {
+        if (utteranceId == null) return
+        pendingWaiters.remove(utteranceId)?.complete(Unit)
     }
 
     private fun containsCjk(text: String): Boolean =
@@ -57,11 +74,8 @@ object Speaker : TextToSpeech.OnInitListener {
                 block == Character.UnicodeBlock.BOPOMOFO
         }
 
-    private fun localeFor(text: String): Locale = when {
-        containsCjk(text) -> Locale.TRADITIONAL_CHINESE
-        UserPreferences.speechLocaleTag.value == UserPreferences.LOCALE_ZH_TW && containsCjk(text) -> Locale.TRADITIONAL_CHINESE
-        else -> Locale.US
-    }
+    private fun localeFor(text: String): Locale =
+        if (containsCjk(text)) Locale.TRADITIONAL_CHINESE else Locale.US
 
     private fun applyLocaleAndRate(engine: TextToSpeech, locale: Locale) {
         engine.setSpeechRate(UserPreferences.speechRate.value)
@@ -116,21 +130,25 @@ object Speaker : TextToSpeech.OnInitListener {
         val engine = tts
         if (!ready || engine == null) return
         applyLocaleAndRate(engine, localeFor(text))
-        val id = "wait-${SystemClock.uptimeMillis()}"
+        val id = "wait-${SystemClock.uptimeMillis()}-${utteranceSeq.incrementAndGet()}"
         val finished = CompletableDeferred<Unit>()
-        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) { if (utteranceId == id) finished.complete(Unit) }
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) { if (utteranceId == id) finished.complete(Unit) }
-            override fun onStop(utteranceId: String?, interrupted: Boolean) { if (utteranceId == id) finished.complete(Unit) }
-        })
-        engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
-        withTimeoutOrNull(MAX_SPEECH_WAIT_MS) { finished.await() }
+        pendingWaiters[id] = finished
+        try {
+            val result = engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+            if (result != TextToSpeech.SUCCESS) {
+                finished.complete(Unit)
+                return
+            }
+            withTimeoutOrNull(MAX_SPEECH_WAIT_MS) { finished.await() }
+        } finally {
+            pendingWaiters.remove(id)
+        }
     }
 
     fun stop() {
         pending = null
         tts?.stop()
+        pendingWaiters.values.forEach { it.complete(Unit) }
+        pendingWaiters.clear()
     }
 }

@@ -54,8 +54,12 @@ object LlmJson {
     // Inputs put what changes between calls last; each prompt's instructions stay the same for
     // every call, so OpenAI can reuse their processing (see OpenAiLlmClient).
 
-    fun commandInput(today: StayDate, utterance: String): String =
-        "Today: ${isoDate(today)}\nCommand: $utterance"
+    fun commandInput(today: StayDate, utterance: String, foregroundApp: String? = null): String =
+        if (foregroundApp.isNullOrBlank()) {
+            "Today: ${isoDate(today)}\nCommand: $utterance"
+        } else {
+            "Today: ${isoDate(today)}\nCurrent app: $foregroundApp\nCommand: $utterance"
+        }
 
     fun answerInput(today: StayDate, slot: String, question: String, answer: String): String =
         "Today: ${isoDate(today)}\nDetail being collected: $slot\nQuestion: $question\nReply: $answer"
@@ -159,6 +163,10 @@ object LlmJson {
         "REPEAT_LAST" -> AppIntent.RepeatLast
         "TAKE_SCREENSHOT" -> AppIntent.TakeScreenshot
         "CAMERA_ACTION" -> AppIntent.CameraAction(o.bool("take_photo") ?: false)
+        "CURRENT_TIME" -> AppIntent.CurrentTime
+        "WEATHER" -> AppIntent.Weather(o.text("location"), (o.count("day_offset", 0..2) ?: 0))
+        "SET_ALARM" -> AppIntent.SetAlarm(o.count("hour", 0..23), o.count("minute", 0..59) ?: 0, o.text("label"))
+        "SET_TIMER" -> AppIntent.SetTimer(o.count("duration_seconds", 1..86400), o.text("label"))
         "NAVIGATE" -> AppIntent.Navigate(o.text("destination"), o.text("mode")?.takeIf { it in FollowUpRules.TRAVEL_MODES })
         "OPEN_APP" -> AppIntent.OpenApp(o.text("app").orEmpty())
         "CHECK_BALANCE" -> AppIntent.CheckBalance

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.os.BatteryManager
+import android.provider.AlarmClock
 import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -15,6 +16,7 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import com.example.myapplication.Message
 import com.example.myapplication.MessageKind
+import com.example.myapplication.assistant.WeatherService
 import com.example.myapplication.debug.Timing
 import com.example.myapplication.history.OperationHistoryManager
 import com.example.myapplication.history.OperationRecord
@@ -27,9 +29,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Owns the one [VoiceViewModel] for the whole process instead of each MainActivity. The dialog is
@@ -55,6 +61,7 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     private val llm = OpenAiLlmClient(app.assets)
     private val conversation = CommandConversation(llm)
     private var requestJob: Job? = null
+    private var saveHistoryJob: Job? = null
     private var lastUtterance: String = ""
 
     /** True while a command is being understood or run by the service. */
@@ -82,30 +89,35 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         warmUp()
         loadHistory()
         refreshOperationHistory()
-        // Receive replies and per-command lifecycle status directly from the service.
+        // Receive replies and per-command lifecycle status safely on the main thread.
         CommandBridge.setClient(
-            onReply = { text, choices, kind -> onServiceReply(text, choices, kind) },
-            onStatus = { isProcessing = it == CommandBridge.Status.STARTED },
+            onReply = { text, choices, kind -> scope.launch { onServiceReply(text, choices, kind) } },
+            onStatus = { status -> scope.launch { isProcessing = status == CommandBridge.Status.STARTED } },
             onStop = { stopRequest() },
-            onAwaitingAnswer = { awaitingAnswer = it },
-            onHistoryChanged = { refreshOperationHistory() }
+            onAwaitingAnswer = { awaiting -> scope.launch { awaitingAnswer = awaiting } },
+            onHistoryChanged = { scope.launch { refreshOperationHistory() } }
         )
     }
 
-    /** Saved after every message, so the chat survives the app being closed. Only the latest are kept. */
-    private fun saveHistory() {
-        val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
-        val array = JSONArray()
-        messages.takeLast(MAX_SAVED_MESSAGES).forEach {
-            val obj = JSONObject()
-            obj.put("text", it.text)
-            obj.put("isUser", it.isUser)
-            obj.put("kind", it.kind.name)
-            obj.put("timestamp", it.timestamp)
-            if (it.choices.isNotEmpty()) obj.put("choices", JSONArray(it.choices))
-            array.put(obj)
+    /** Saved off the main thread with short debouncing so rapid message bursts don't stall UI. */
+    private fun saveHistory(immediate: Boolean = false) {
+        val snapshot = messages.takeLast(MAX_SAVED_MESSAGES)
+        saveHistoryJob?.cancel()
+        saveHistoryJob = scope.launch(Dispatchers.IO) {
+            if (!immediate) delay(250)
+            val prefs = getApplication<Application>().getSharedPreferences("voice_history", Context.MODE_PRIVATE)
+            val array = JSONArray()
+            snapshot.forEach {
+                val obj = JSONObject()
+                obj.put("text", it.text)
+                obj.put("isUser", it.isUser)
+                obj.put("kind", it.kind.name)
+                obj.put("timestamp", it.timestamp)
+                if (it.choices.isNotEmpty()) obj.put("choices", JSONArray(it.choices))
+                array.put(obj)
+            }
+            prefs.edit().putString("history", array.toString()).apply()
         }
-        prefs.edit().putString("history", array.toString()).apply()
     }
 
     private fun loadHistory() {
@@ -219,8 +231,8 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         isProcessing = true
         CommandBridge.showUnderstanding(userInput)
         requestJob = scope.launch {
-            val turn = Timing.measure("Understanding the request") { conversation.handle(userInput) }
-            isProcessing = false
+            val foregroundApp = CommandBridge.foregroundAppName()
+            val turn = Timing.measure("Understanding the request") { conversation.handle(userInput, foregroundApp) }
             // The first sentence cuts off anything older; the rest wait their turn so all are heard.
             turn.says.forEachIndexed { i, say ->
                 val choices = if (i == turn.says.lastIndex) turn.choices else emptyList()
@@ -228,6 +240,9 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                 addAssistant(say, choices = choices, interrupt = i == 0, kind = kind)
             }
             run(turn.run, userInput)
+            if (!CommandBridge.isServiceConnected || turn.run.all { isLocal(it) }) {
+                isProcessing = false
+            }
         }
     }
 
@@ -245,9 +260,11 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
-    private fun run(intents: List<AppIntent>, utterance: String) {
+    private suspend fun run(intents: List<AppIntent>, utterance: String) {
         val (local, remote) = intents.partition { isLocal(it) }
-        local.forEach { runLocally(it, utterance) }
+        for (intent in local) {
+            runLocally(intent, utterance)
+        }
         if (remote.isEmpty()) {
             CommandBridge.clearUnderstanding()
         } else {
@@ -260,20 +277,25 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
     private fun isLocal(intent: AppIntent): Boolean =
         intent === AppIntent.Greeting || intent === AppIntent.SaveHistory ||
             intent === AppIntent.ClearHistory || intent === AppIntent.ViewOperationHistory ||
-            intent === AppIntent.Battery
+            intent === AppIntent.Battery || intent === AppIntent.CurrentTime ||
+            intent is AppIntent.Weather || intent is AppIntent.SetAlarm || intent is AppIntent.SetTimer
 
-    private fun runLocally(intent: AppIntent, utterance: String) {
+    private suspend fun runLocally(intent: AppIntent, utterance: String) {
+        val preferZh = utterance.any { it.code > 0x2E80 } ||
+            UserPreferences.speechLocaleTag.value == UserPreferences.LOCALE_ZH_TW
         when (intent) {
             AppIntent.Greeting -> addAssistant(
-                "Hi! I'm ZeroUI, your voice assistant. I can control your phone, navigate, check NCCUbank, " +
-                    "order food, find stays on Booking.com and work in most other apps. " +
-                    "Tap an example below, or just say what you need. You can ask for several things at once.",
+                if (preferZh) {
+                    "嗨！我是 ZeroUI 語音助理。我可以幫你查天氣、設鬧鐘與倒計時、控制手機、導航、查 NCCUbank、訂餐或訂房，也能跨 App 幫你完成操作。點選下方範例或直接說出需求吧！"
+                } else {
+                    "Hi! I'm ZeroUI, your voice assistant. I can check the weather, set alarms & timers, control your phone, navigate, check NCCUbank, order food, find stays on Booking.com and work in most other apps. Tap an example below, or just say what you need."
+                },
                 choices = EXAMPLES,
-                speech = "Hi! I'm ZeroUI. Tap an example, or just tell me what you need."
+                speech = if (preferZh) "嗨！我是 ZeroUI，有什麼我可以幫你的？" else "Hi! I'm ZeroUI. Tap an example, or just tell me what you need."
             )
             AppIntent.SaveHistory -> {
-                saveHistory()
-                addAssistant("Our conversation is saved. I also save it automatically as we go.")
+                saveHistory(immediate = true)
+                addAssistant(if (preferZh) "對話紀錄已儲存，平時也會自動保存。" else "Our conversation is saved. I also save it automatically as we go.")
             }
             AppIntent.ClearHistory -> {
                 clearHistory(announce = true)
@@ -286,16 +308,118 @@ class VoiceViewModel(app: Application) : AndroidViewModel(app) {
                 val bm = getApplication<Application>()
                     .getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                addAssistant("Your battery is at $level%. ${if (level < 20) "You should charge it soon!" else "You're good to go."}")
-                OperationHistoryManager.addRecord(
-                    getApplication(),
-                    utterance = utterance,
-                    description = "Checked battery ($level%)",
-                    status = "SUCCESS"
-                )
-                refreshOperationHistory()
+                val reply = if (preferZh) {
+                    "目前電量是 $level%。${if (level < 20) "電量偏低，記得充電喔！" else "電量還很充足。"}"
+                } else {
+                    "Your battery is at $level%. ${if (level < 20) "You should charge it soon!" else "You're good to go."}"
+                }
+                addAssistant(reply)
+                recordLocalOperation(utterance, "Checked battery ($level%)", "SUCCESS")
+            }
+            AppIntent.CurrentTime -> {
+                val now = Date()
+                val reply = if (preferZh) {
+                    val fmt = SimpleDateFormat("M月d日 EEEE a h點mm分", Locale.TRADITIONAL_CHINESE)
+                    "現在時間是 ${fmt.format(now)}。"
+                } else {
+                    val fmt = SimpleDateFormat("EEEE, MMM d, h:mm a", Locale.US)
+                    "It's currently ${fmt.format(now)}."
+                }
+                addAssistant(reply)
+                recordLocalOperation(utterance, "Checked current time", "SUCCESS")
+            }
+            is AppIntent.Weather -> {
+                val reply = WeatherService.queryWeather(intent.location, intent.dayOffset, preferZh)
+                addAssistant(reply)
+                recordLocalOperation(utterance, "Checked weather (${intent.location ?: "current location"})", "SUCCESS")
+            }
+            is AppIntent.SetAlarm -> {
+                val hour = intent.hour ?: return
+                val minute = intent.minute ?: 0
+                val ctx = getApplication<Application>()
+                val alarmIntent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(AlarmClock.EXTRA_HOUR, hour)
+                    putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                    putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    intent.label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+                }
+                val timeStr = String.format(Locale.ROOT, "%02d:%02d", hour, minute)
+                val started = runCatching { ctx.startActivity(alarmIntent); true }.getOrDefault(false)
+                if (started) {
+                    val reply = if (preferZh) {
+                        "已幫你設定 $timeStr 的鬧鐘${intent.label?.let { "（$it）" } ?: ""}。"
+                    } else {
+                        "Alarm set for $timeStr${intent.label?.let { " ($it)" } ?: ""}."
+                    }
+                    addAssistant(reply)
+                    recordLocalOperation(utterance, "Set alarm for $timeStr", "SUCCESS")
+                } else {
+                    addAssistant(
+                        if (preferZh) "找不到系統時鐘應用程式，無法設定鬧鐘。" else "I couldn't find a Clock app to set the alarm.",
+                        kind = MessageKind.ERROR
+                    )
+                    recordLocalOperation(utterance, "Set alarm for $timeStr", "FAILED")
+                }
+            }
+            is AppIntent.SetTimer -> {
+                val seconds = intent.durationSeconds ?: return
+                val ctx = getApplication<Application>()
+                val timerIntent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+                    putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                    intent.label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+                }
+                val durationLabel = formatDuration(seconds, preferZh)
+                val started = runCatching { ctx.startActivity(timerIntent); true }.getOrDefault(false)
+                if (started) {
+                    val reply = if (preferZh) {
+                        "已開始倒計時 $durationLabel${intent.label?.let { "（$it）" } ?: ""}。"
+                    } else {
+                        "Countdown timer started for $durationLabel${intent.label?.let { " ($it)" } ?: ""}."
+                    }
+                    addAssistant(reply)
+                    recordLocalOperation(utterance, "Started timer ($durationLabel)", "SUCCESS")
+                } else {
+                    addAssistant(
+                        if (preferZh) "找不到系統時鐘應用程式，無法啟動倒計時。" else "I couldn't find a Clock app to start the timer.",
+                        kind = MessageKind.ERROR
+                    )
+                    recordLocalOperation(utterance, "Started timer ($durationLabel)", "FAILED")
+                }
             }
             else -> {}
+        }
+    }
+
+    private fun recordLocalOperation(utterance: String, description: String, status: String) {
+        OperationHistoryManager.addRecord(getApplication(), utterance, description, status)
+        refreshOperationHistory()
+    }
+
+    private fun formatDuration(totalSeconds: Int, zh: Boolean): String {
+        val hours = totalSeconds / 3600
+        val mins = (totalSeconds % 3600) / 60
+        val secs = totalSeconds % 60
+        return if (zh) {
+            buildString {
+                if (hours > 0) append("${hours} 小時")
+                if (mins > 0) {
+                    if (isNotEmpty()) append(" ")
+                    append("${mins} 分鐘")
+                }
+                if (secs > 0) {
+                    if (isNotEmpty()) append(" ")
+                    append("${secs} 秒")
+                }
+            }
+        } else {
+            listOfNotNull(
+                hours.takeIf { it > 0 }?.let { "$it ${if (it == 1) "hour" else "hours"}" },
+                mins.takeIf { it > 0 }?.let { "$it ${if (it == 1) "minute" else "minutes"}" },
+                secs.takeIf { it > 0 }?.let { "$it ${if (it == 1) "second" else "seconds"}" }
+            ).joinToString(" ")
         }
     }
 

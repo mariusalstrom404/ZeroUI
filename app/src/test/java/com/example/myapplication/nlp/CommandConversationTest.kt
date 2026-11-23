@@ -242,4 +242,26 @@ class CommandConversationTest {
         assertTrue(say("the first weekend of December").says.single().contains("How many guests"))
         assertEquals(1, llm.answerCalls)
     }
+
+    @Test
+    fun alarmFollowUpParsesLocallyWithoutLlm() {
+        val askTurn = say("幫我設鬧鐘")
+        assertTrue(askTurn.run.isEmpty())
+        assertTrue(askTurn.choices.isNotEmpty())
+        val doneTurn = say("早上七點半")
+        assertEquals(listOf<AppIntent>(AppIntent.SetAlarm(7, 30)), doneTurn.run)
+        assertEquals(0, llm.parseCalls)
+        assertEquals(0, llm.answerCalls)
+    }
+
+    @Test
+    fun timerFollowUpParsesLocallyWithoutLlm() {
+        val askTurn = say("幫我倒計時")
+        assertTrue(askTurn.run.isEmpty())
+        assertTrue(askTurn.choices.isNotEmpty())
+        val doneTurn = say("10 分鐘")
+        assertEquals(listOf<AppIntent>(AppIntent.SetTimer(600)), doneTurn.run)
+        assertEquals(0, llm.parseCalls)
+        assertEquals(0, llm.answerCalls)
+    }
 }

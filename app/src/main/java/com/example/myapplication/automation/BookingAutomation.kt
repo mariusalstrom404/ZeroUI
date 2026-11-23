@@ -73,8 +73,8 @@ class BookingAutomation(private val engine: AutomationEngine) {
 
         private const val MAX_BACKS = 4
         private const val CALENDAR_SCROLLS = 14
-        /** The calendar recomposes after each tap; give a day this long to reappear before scrolling. */
-        private const val DAY_WAIT_MS = 2500L
+        /** Short wait for calendar recomposition after a scroll before scrolling again. */
+        private const val DAY_WAIT_MS = 650L
         private const val ROOM_SCROLLS = 8
 
         private val PROPERTY_COUNT = Regex("^[\\d,.]+\\s+propert(?:y|ies)", RegexOption.IGNORE_CASE)

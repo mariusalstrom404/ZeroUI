@@ -178,6 +178,8 @@ class CommandConversation(
 
     private fun choicesFor(slot: FollowUpSlot): List<String> = when (slot) {
         FollowUpSlot.MODE -> listOf("Bus", "Walking", "Driving")
+        FollowUpSlot.ALARM_TIME -> listOf("07:00", "07:30", "08:00", "09:00")
+        FollowUpSlot.DURATION -> listOf("3 分鐘", "5 分鐘", "10 分鐘", "15 分鐘")
         else -> emptyList()
     }
 

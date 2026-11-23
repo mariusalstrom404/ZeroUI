@@ -16,18 +16,21 @@ object CommandBridge {
 
     enum class Status { STARTED, FINISHED }
 
-    private var service: MyAccessibilityService? = null
-    private var replyListener: ((String, List<String>, MessageKind) -> Unit)? = null
-    private var statusListener: ((Status) -> Unit)? = null
-    private var stopListener: (() -> Boolean)? = null
-    private var awaitingListener: ((Boolean) -> Unit)? = null
-    private var historyListener: (() -> Unit)? = null
-    private var answer: CompletableDeferred<String>? = null
+    @Volatile private var service: MyAccessibilityService? = null
+    @Volatile private var replyListener: ((String, List<String>, MessageKind) -> Unit)? = null
+    @Volatile private var statusListener: ((Status) -> Unit)? = null
+    @Volatile private var stopListener: (() -> Boolean)? = null
+    @Volatile private var awaitingListener: ((Boolean) -> Unit)? = null
+    @Volatile private var historyListener: (() -> Unit)? = null
+    @Volatile private var answer: CompletableDeferred<String>? = null
 
     val isServiceConnected: Boolean get() = service != null
 
     /** A running automation asked the user something and is waiting for the reply. */
     val isAwaitingAnswer: Boolean get() = answer != null
+
+    /** Label or package of the app currently underneath ZeroUI, or null when unavailable. */
+    fun foregroundAppName(): String? = service?.foregroundAppLabel()
 
     // --- Service side ---
 

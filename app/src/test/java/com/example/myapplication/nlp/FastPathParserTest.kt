@@ -60,9 +60,47 @@ class FastPathParserTest {
         assertNotNull(openApp)
         assertEquals(AppIntent.OpenApp("YouTube"), openApp!![0].intent)
 
+        val politeOpenZh = FastPathParser.parse("幫我打開 LINE。")
+        assertNotNull(politeOpenZh)
+        assertEquals(AppIntent.OpenApp("LINE"), politeOpenZh!![0].intent)
+
+        // Built-in examples should hit fast-path
+        assertEquals(AppIntent.Battery, FastPathParser.parse("Check my battery")?.single()?.intent)
+        assertEquals(AppIntent.Flashlight(true), FastPathParser.parse("Turn on the flashlight")?.single()?.intent)
+        assertEquals(AppIntent.Navigate("airport", null), FastPathParser.parse("Take me to the airport")?.single()?.intent)
+
         // Complex instruction with multiple steps should return null (fallback to LLM)
         val complex = FastPathParser.parse("open Foodpanda and search for pizza")
         assertNull(complex)
+    }
+
+    @Test
+    fun testSiriLikeWeatherAlarmTimerAndTime() {
+        // Weather
+        assertEquals(AppIntent.Weather(null, 0), FastPathParser.parse("今天天氣如何？")?.single()?.intent)
+        assertEquals(AppIntent.Weather("台北", 0), FastPathParser.parse("台北今天天氣怎麼樣")?.single()?.intent)
+        assertEquals(AppIntent.Weather("高雄", 1), FastPathParser.parse("明天高雄天氣如何")?.single()?.intent)
+        assertEquals(AppIntent.Weather("tokyo", 0), FastPathParser.parse("What's the weather in Tokyo?")?.single()?.intent)
+
+        // Alarm
+        assertEquals(AppIntent.SetAlarm(null, 0), FastPathParser.parse("幫我設鬧鐘")?.single()?.intent)
+        assertEquals(AppIntent.SetAlarm(7, 30), FastPathParser.parse("幫我設早上七點半的鬧鐘")?.single()?.intent)
+        assertEquals(AppIntent.SetAlarm(20, 15), FastPathParser.parse("設晚上8點15分鬧鐘")?.single()?.intent)
+        assertEquals(AppIntent.SetAlarm(6, 45), FastPathParser.parse("Set an alarm for 6:45 am")?.single()?.intent)
+
+        // Countdown timer
+        assertEquals(AppIntent.SetTimer(300), FastPathParser.parse("倒計時5分鐘")?.single()?.intent)
+        assertEquals(AppIntent.SetTimer(900), FastPathParser.parse("倒數十五分鐘")?.single()?.intent)
+        assertEquals(AppIntent.SetTimer(90), FastPathParser.parse("Set a timer for 1 minute 30 seconds")?.single()?.intent)
+        assertEquals(AppIntent.SetTimer(null), FastPathParser.parse("幫我倒計時")?.single()?.intent)
+
+        // Current time
+        assertEquals(AppIntent.CurrentTime, FastPathParser.parse("現在幾點了？")?.single()?.intent)
+        assertEquals(AppIntent.CurrentTime, FastPathParser.parse("What time is it?")?.single()?.intent)
+
+        // Explicit volume/brightness levels
+        assertEquals(AppIntent.Volume(AppIntent.Change.SET, 50), FastPathParser.parse("音量調到50%")?.single()?.intent)
+        assertEquals(AppIntent.Brightness(AppIntent.Change.SET, 80), FastPathParser.parse("Set brightness to 80")?.single()?.intent)
     }
 
     @Test
